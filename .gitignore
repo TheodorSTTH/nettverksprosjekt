@@ -1,1 +1,6 @@
-hello
+#ignore all **/*.md files
+**/.md
+
+#EXCEPT for ignoring README
+!README.md
+!**/README.md
