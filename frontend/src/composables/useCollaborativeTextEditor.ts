@@ -32,6 +32,7 @@ type EditOperation =
   | {
       type: 'insert'
       afterId: string
+      beforeId: string
       text: string
     }
 
@@ -180,6 +181,8 @@ export function useCollaborativeTextEditor() {
 
     const insertedText = nextText.slice(prefixLength, nextText.length - suffixLength)
     const afterId = prefixLength === 0 ? '' : baseChars.value[prefixLength - 1]?.id ?? ''
+    const beforeId =
+      prefixLength >= baseChars.value.length ? '' : baseChars.value[prefixLength]?.id ?? ''
 
     const ops: EditOperation[] = []
 
@@ -188,7 +191,7 @@ export function useCollaborativeTextEditor() {
     }
 
     if (insertedText.length > 0) {
-      ops.push({ type: 'insert', afterId, text: insertedText })
+      ops.push({ type: 'insert', afterId, beforeId, text: insertedText })
     }
 
     return ops

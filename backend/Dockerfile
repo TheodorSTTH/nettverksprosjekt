@@ -1,6 +1,20 @@
 FROM gcc:14
-COPY . /usr/src/myapp
-WORKDIR /usr/src/myapp
-RUN g++ -std=c++20 main.cpp -o main
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        cmake \
+        libboost-dev \
+        libboost-system-dev \
+        nlohmann-json3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY . .
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --target crdt_backend
+
 EXPOSE 3030
-CMD ["./main"]
+
+CMD ["./build/crdt_backend"]
