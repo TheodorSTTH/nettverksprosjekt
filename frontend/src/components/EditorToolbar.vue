@@ -1,84 +1,66 @@
 <script setup lang="ts">
-import type { SocketState } from '../composables/useCollaborativeTextEditor'
-
 defineProps<{
   canRedo: boolean
   canUndo: boolean
-  connectionLabel: string
-  socketState: SocketState
+  fontSize: number
 }>()
 
 defineEmits<{
-  reconnect: []
   redo: []
   save: []
+  'set-font-size': [value: number]
   undo: []
 }>()
 </script>
 
 <template>
-  <header class="top-bar">
-    <div class="toolbar" aria-label="Editor toolbar">
-      <button class="icon-button" type="button" :disabled="!canUndo" aria-label="Undo" @click="$emit('undo')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M9 7 4 12l5 5" />
-          <path d="M5 12h9a5 5 0 1 1 0 10h-1" />
-        </svg>
-      </button>
+  <div class="toolbar" aria-label="Editor toolbar">
+    <button class="icon-button" type="button" :disabled="!canUndo" aria-label="Undo" @click="$emit('undo')">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 7 4 12l5 5" />
+        <path d="M5 12h9a5 5 0 1 1 0 10h-1" />
+      </svg>
+    </button>
 
-      <button class="icon-button" type="button" :disabled="!canRedo" aria-label="Redo" @click="$emit('redo')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m15 7 5 5-5 5" />
-          <path d="M19 12h-9a5 5 0 1 0 0 10h1" />
-        </svg>
-      </button>
+    <button class="icon-button" type="button" :disabled="!canRedo" aria-label="Redo" @click="$emit('redo')">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m15 7 5 5-5 5" />
+        <path d="M19 12h-9a5 5 0 1 0 0 10h1" />
+      </svg>
+    </button>
 
-      <span class="toolbar-separator" aria-hidden="true"></span>
+    <span class="toolbar-separator" aria-hidden="true"></span>
 
-      <button class="toolbar-button" type="button" @click="$emit('save')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-          <path d="M17 21v-8H7v8" />
-          <path d="M7 3v5h8" />
-        </svg>
-        Save
-      </button>
+    <label class="font-size-field">
+      <span>Font size</span>
+      <input
+        :value="fontSize"
+        type="number"
+        min="10"
+        max="48"
+        step="1"
+        @change="$emit('set-font-size', Number(($event.target as HTMLInputElement).value))"
+      />
+    </label>
 
-      <button class="toolbar-button secondary" type="button" @click="$emit('reconnect')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M21 12a9 9 0 0 0-15.4-6.4L3 8" />
-          <path d="M3 3v5h5" />
-          <path d="M3 12a9 9 0 0 0 15.4 6.4L21 16" />
-          <path d="M16 16h5v5" />
-        </svg>
-        Reconnect
-      </button>
-    </div>
-
-    <div class="connection-status" :data-state="socketState">
-      <span class="status-dot" aria-hidden="true"></span>
-      <span>{{ connectionLabel }}</span>
-    </div>
-  </header>
+    <button class="toolbar-button" type="button" @click="$emit('save')">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+        <path d="M17 21v-8H7v8" />
+        <path d="M7 3v5h8" />
+      </svg>
+      Save
+    </button>
+  </div>
 </template>
 
 <style scoped>
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 58px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #e7ebf0;
-}
-
 .toolbar {
   display: flex;
-  flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
+  padding: 0 18px 14px;
 }
 
 .icon-button,
@@ -116,10 +98,6 @@ defineEmits<{
   cursor: not-allowed;
 }
 
-.toolbar-button.secondary {
-  color: #46505c;
-}
-
 .icon-button svg,
 .toolbar-button svg {
   width: 19px;
@@ -138,53 +116,39 @@ defineEmits<{
   background: #d8dee7;
 }
 
-.connection-status {
+.font-size-field {
   display: inline-flex;
-  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  min-height: 30px;
-  padding: 0 10px;
   color: #596373;
   font-size: 0.9rem;
-  white-space: nowrap;
-  border: 1px solid #dde3ea;
-  border-radius: 999px;
-  background: #fafbfc;
+  font-weight: 650;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #a8b0ba;
+.font-size-field input {
+  width: 72px;
+  height: 34px;
+  padding: 0 8px;
+  color: #1f252d;
+  border: 1px solid #d9dfe7;
+  border-radius: 6px;
+  outline: none;
 }
 
-.connection-status[data-state="connected"] .status-dot {
-  background: #15803d;
-}
-
-.connection-status[data-state="connecting"] .status-dot {
-  background: #c27803;
-}
-
-.connection-status[data-state="disconnected"] .status-dot {
-  background: #b91c1c;
+.font-size-field input:focus {
+  border-color: #2088ff;
+  box-shadow: 0 0 0 3px rgba(32, 136, 255, 0.16);
 }
 
 @media (max-width: 760px) {
-  .top-bar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .toolbar {
     flex-wrap: wrap;
   }
 }
 
 @media (max-width: 460px) {
-  .toolbar-button {
+  .toolbar-button,
+  .font-size-field {
     flex: 1 1 auto;
   }
 }

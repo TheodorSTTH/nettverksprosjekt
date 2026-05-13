@@ -10,18 +10,15 @@ const editor = useCollaborativeTextEditor()
 <template>
   <main class="app-shell">
     <section class="editor-card" aria-label="Plain text editor">
-      <EditorToolbar
-        :can-redo="editor.canRedo.value"
-        :can-undo="editor.canUndo.value"
+      <ServerSettings
         :connection-label="editor.connectionLabel.value"
+        :server-url="editor.serverUrl.value"
         :socket-state="editor.socketState.value"
+        :user-name="editor.userName.value"
         @reconnect="editor.connectSocket"
-        @redo="editor.redoEdit"
-        @save="editor.saveDocument"
-        @undo="editor.undoEdit"
+        @update:server-url="editor.serverUrl.value = $event"
+        @update:user-name="editor.updateUserName"
       />
-
-      <ServerSettings v-model:server-url="editor.serverUrl.value" @reconnect="editor.connectSocket" />
 
       <div class="editor-meta">
         <div>
@@ -31,7 +28,25 @@ const editor = useCollaborativeTextEditor()
         <span class="save-state">{{ editor.saveLabel.value }}</span>
       </div>
 
-      <PlainTextEditor :model-value="editor.editorText.value" @update:model-value="editor.updateText" />
+      <EditorToolbar
+        :can-redo="editor.canRedo.value"
+        :can-undo="editor.canUndo.value"
+        :font-size="editor.fontSize.value"
+        @redo="editor.redoEdit"
+        @save="editor.saveDocument"
+        @set-font-size="editor.setFontSize"
+        @undo="editor.undoEdit"
+      />
+
+      <PlainTextEditor
+        :chars="editor.baseChars.value"
+        :client-id="editor.clientId.value"
+        :font-size="editor.fontSize.value"
+        :model-value="editor.editorText.value"
+        :users="editor.visibleRemoteUsers.value"
+        @cursor-change="editor.updateCursor"
+        @update:model-value="editor.updateText"
+      />
     </section>
   </main>
 </template>

@@ -2,29 +2,95 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
-type ServerMessage = {
-  type?: string
-  content?: string
+export type RemoteCharacter = {
+  id: string
+  value: string
 }
 
-const DEFAULT_DOCUMENT_PATH = '/shared.txt'
-const SYNC_INTERVAL_MS = 3000
+export type RemoteUser = {
+  clientId: string
+  userName: string
+  cursor: {
+    afterId: string
+  }
+}
 
-const defaultText = [
-  'Start writing your shared text file here.',
-  '',
-  'This editor is plain text only for now. Formatting, CRDT merging, and rich text features will be handled later by the backend and future editor work.',
-].join('\n')
+type ServerMessage = {
+  type?: string
+  revision?: number
+  text?: string
+  chars?: RemoteCharacter[]
+  fontSize?: number
+  users?: RemoteUser[]
+}
+
+type EditOperation =
+  | {
+      type: 'delete'
+      ids: string[]
+    }
+  | {
+      type: 'insert'
+      afterId: string
+      text: string
+    }
+
+const CLIENT_ID_KEY = 'nettverk-editor-client-id'
+const USER_NAME_KEY = 'nettverk-editor-user-name'
+const DEFAULT_DOCUMENT_PATH = '/shared.txt'
+const SYNC_INTERVAL_MS = 5000
+
+function createClientId() {
+  return `client-${crypto.randomUUID()}`
+}
+
+function storedValue(key: string, fallback: string) {
+  const value = window.localStorage.getItem(key)
+  return value && value.trim().length > 0 ? value : fallback
+}
+
+function commonPrefixLength(left: string, right: string) {
+  const max = Math.min(left.length, right.length)
+  let index = 0
+
+  while (index < max && left[index] === right[index]) {
+    index += 1
+  }
+
+  return index
+}
+
+function commonSuffixLength(left: string, right: string, prefixLength: number) {
+  const max = Math.min(left.length, right.length) - prefixLength
+  let count = 0
+
+  while (
+    count < max &&
+    left[left.length - 1 - count] === right[right.length - 1 - count]
+  ) {
+    count += 1
+  }
+
+  return count
+}
 
 export function useCollaborativeTextEditor() {
-  const editorText = ref(defaultText)
-  const serverUrl = ref('ws://localhost:8080/ws')
+  const editorText = ref('')
+  const serverUrl = ref('ws://localhost:3030/ws')
+  const userName = ref('Anonymous')
+  const clientId = ref('')
   const socketState = ref<SocketState>('disconnected')
   const statusMessage = ref('Disconnected')
   const hasUnsavedChanges = ref(false)
+  const isWaitingForSnapshot = ref(false)
   const lastSavedAt = ref<string | null>(null)
+  const baseRevision = ref(0)
+  const baseChars = ref<RemoteCharacter[]>([])
+  const fontSize = ref(16)
+  const remoteUsers = ref<RemoteUser[]>([])
+  const cursorIndex = ref(0)
 
-  const history = ref<string[]>([defaultText])
+  const history = ref<string[]>([''])
   const historyIndex = ref(0)
 
   let socket: WebSocket | null = null
@@ -38,6 +104,10 @@ export function useCollaborativeTextEditor() {
   const saveLabel = computed(() => {
     if (hasUnsavedChanges.value) {
       return 'Unsaved changes'
+    }
+
+    if (isWaitingForSnapshot.value) {
+      return 'Waiting for server'
     }
 
     if (lastSavedAt.value) {
@@ -58,6 +128,19 @@ export function useCollaborativeTextEditor() {
 
     return 'Disconnected'
   })
+
+  const visibleRemoteUsers = computed(() =>
+    remoteUsers.value.filter((user) => user.clientId !== clientId.value),
+  )
+
+  function currentCursorAfterId() {
+    if (cursorIndex.value <= 0) {
+      return ''
+    }
+
+    const character = baseChars.value[Math.min(cursorIndex.value, baseChars.value.length) - 1]
+    return character?.id ?? ''
+  }
 
   function nowLabel() {
     return new Intl.DateTimeFormat(undefined, {
@@ -81,11 +164,58 @@ export function useCollaborativeTextEditor() {
     historyIndex.value = history.value.length - 1
   }
 
+  function buildOperations(nextText: string): EditOperation[] {
+    const previousText = baseChars.value.map((character) => character.value).join('')
+
+    if (previousText === nextText) {
+      return []
+    }
+
+    const prefixLength = commonPrefixLength(previousText, nextText)
+    const suffixLength = commonSuffixLength(previousText, nextText, prefixLength)
+
+    const deletedIds = baseChars.value
+      .slice(prefixLength, previousText.length - suffixLength)
+      .map((character) => character.id)
+
+    const insertedText = nextText.slice(prefixLength, nextText.length - suffixLength)
+    const afterId = prefixLength === 0 ? '' : baseChars.value[prefixLength - 1]?.id ?? ''
+
+    const ops: EditOperation[] = []
+
+    if (deletedIds.length > 0) {
+      ops.push({ type: 'delete', ids: deletedIds })
+    }
+
+    if (insertedText.length > 0) {
+      ops.push({ type: 'insert', afterId, text: insertedText })
+    }
+
+    return ops
+  }
+
   function updateText(value: string) {
     editorText.value = value
     hasUnsavedChanges.value = true
     statusMessage.value = 'Editing locally'
     recordHistory(value)
+  }
+
+  function updateCursor(index: number) {
+    cursorIndex.value = index
+
+    sendToServer({
+      type: 'cursor:update',
+      clientId: clientId.value,
+      userName: userName.value,
+      cursor: { afterId: currentCursorAfterId() },
+    })
+  }
+
+  function updateUserName(value: string) {
+    userName.value = value || 'Anonymous'
+    window.localStorage.setItem(USER_NAME_KEY, userName.value)
+    updateCursor(cursorIndex.value)
   }
 
   function undoEdit() {
@@ -125,42 +255,90 @@ export function useCollaborativeTextEditor() {
 
   function requestLatestText() {
     sendToServer({
-      type: 'text:request',
+      type: 'document:request',
       documentPath: DEFAULT_DOCUMENT_PATH,
+      clientId: clientId.value,
+      userName: userName.value,
+      cursor: { afterId: currentCursorAfterId() },
     })
   }
 
   function saveDocument() {
-    const sent = sendToServer({
-      type: 'text:update',
-      documentPath: DEFAULT_DOCUMENT_PATH,
-      content: editorText.value,
-    })
-
-    hasUnsavedChanges.value = false
-    lastSavedAt.value = nowLabel()
-    statusMessage.value = sent ? 'Saved to server' : 'Saved locally'
-  }
-
-  function applyServerSnapshot(content: string) {
-    if (content === editorText.value) {
-      hasUnsavedChanges.value = false
-      statusMessage.value = 'Already up to date'
+    if (isWaitingForSnapshot.value) {
       return
     }
 
-    editorText.value = content
-    recordHistory(content)
-    hasUnsavedChanges.value = false
-    statusMessage.value = 'Updated from server'
+    const ops = buildOperations(editorText.value)
+
+    if (ops.length === 0) {
+      hasUnsavedChanges.value = false
+      statusMessage.value = 'Already up to date'
+      requestLatestText()
+      return
+    }
+
+    const sent = sendToServer({
+      type: 'edit:batch',
+      documentPath: DEFAULT_DOCUMENT_PATH,
+      clientId: clientId.value,
+      userName: userName.value,
+      baseRevision: baseRevision.value,
+      ops,
+      cursor: { afterId: currentCursorAfterId() },
+    })
+
+    if (sent) {
+      isWaitingForSnapshot.value = true
+      hasUnsavedChanges.value = false
+      lastSavedAt.value = nowLabel()
+      statusMessage.value = 'Sent changes to server'
+      return
+    }
+
+    statusMessage.value = 'Saved locally'
+  }
+
+  function setFontSize(value: number) {
+    fontSize.value = Math.min(48, Math.max(10, value))
+
+    sendToServer({
+      type: 'font-size:set',
+      documentPath: DEFAULT_DOCUMENT_PATH,
+      clientId: clientId.value,
+      userName: userName.value,
+      value: fontSize.value,
+      cursor: { afterId: currentCursorAfterId() },
+    })
+  }
+
+  function applyServerSnapshot(message: ServerMessage) {
+    if (!Array.isArray(message.chars)) {
+      return
+    }
+
+    baseRevision.value = message.revision ?? baseRevision.value
+    baseChars.value = message.chars
+    fontSize.value = message.fontSize ?? fontSize.value
+    remoteUsers.value = Array.isArray(message.users) ? message.users : []
+    isWaitingForSnapshot.value = false
+
+    if (!hasUnsavedChanges.value) {
+      editorText.value = message.text ?? baseChars.value.map((character) => character.value).join('')
+      recordHistory(editorText.value)
+      statusMessage.value = 'Updated from server'
+    } else {
+      statusMessage.value = 'Server updated; local edits pending'
+    }
   }
 
   function handleServerMessage(event: MessageEvent<string>) {
     try {
       const message = JSON.parse(event.data) as ServerMessage
 
-      if (message.type === 'text:snapshot' && typeof message.content === 'string') {
-        applyServerSnapshot(message.content)
+      if (message.type === 'document:snapshot') {
+        applyServerSnapshot(message)
+      } else if (message.type === 'error') {
+        statusMessage.value = 'Server rejected a message'
       }
     } catch {
       statusMessage.value = 'Ignored unsupported server message'
@@ -199,6 +377,9 @@ export function useCollaborativeTextEditor() {
       sendToServer({
         type: 'join',
         documentPath: DEFAULT_DOCUMENT_PATH,
+        clientId: clientId.value,
+        userName: userName.value,
+        cursor: { afterId: currentCursorAfterId() },
       })
       requestLatestText()
     }
@@ -224,9 +405,9 @@ export function useCollaborativeTextEditor() {
 
     if (hasUnsavedChanges.value) {
       saveDocument()
+    } else {
+      requestLatestText()
     }
-
-    requestLatestText()
   }
 
   function handleShortcut(event: KeyboardEvent) {
@@ -257,6 +438,11 @@ export function useCollaborativeTextEditor() {
   }
 
   onMounted(() => {
+    clientId.value = storedValue(CLIENT_ID_KEY, createClientId())
+    userName.value = storedValue(USER_NAME_KEY, 'Anonymous')
+    window.localStorage.setItem(CLIENT_ID_KEY, clientId.value)
+    window.localStorage.setItem(USER_NAME_KEY, userName.value)
+
     connectSocket()
     window.addEventListener('keydown', handleShortcut)
     syncTimer = window.setInterval(syncWithServer, SYNC_INTERVAL_MS)
@@ -273,18 +459,27 @@ export function useCollaborativeTextEditor() {
   })
 
   return {
+    baseChars,
+    baseRevision,
     canRedo,
     canUndo,
+    clientId,
     connectionLabel,
     editorText,
+    fontSize,
     saveDocument,
     saveLabel,
     serverUrl,
     socketState,
     statusMessage,
+    userName,
+    visibleRemoteUsers,
     connectSocket,
     redoEdit,
+    setFontSize,
     undoEdit,
+    updateCursor,
     updateText,
+    updateUserName,
   }
 }
