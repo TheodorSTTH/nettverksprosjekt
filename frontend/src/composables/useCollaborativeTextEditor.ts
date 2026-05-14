@@ -106,6 +106,36 @@ const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#089
 // updated so subsequent writes use the canonical id.
 const fallbackPeerId = Math.floor(Math.random() * 0xffffffff) + 1
 
+// Persisted offline-editing state. Keyed by server URL so different servers
+// don't clobber each other's queues. Operations made while disconnected are
+// queued here and replayed on reconnect; the engine snapshot lets the local
+// document survive a page reload while offline.
+type PendingPayload = Record<string, unknown>
+type PersistedState = { pendingOps: PendingPayload[]; snapshot: RgaNode[] | null }
+const storagePrefix = 'crdt-editor:'
+
+function loadPersistedState(serverUrl: string): PersistedState {
+  try {
+    const raw = localStorage.getItem(storagePrefix + serverUrl)
+    if (!raw) return { pendingOps: [], snapshot: null }
+    const parsed = JSON.parse(raw) as Partial<PersistedState>
+    return {
+      pendingOps: Array.isArray(parsed.pendingOps) ? parsed.pendingOps : [],
+      snapshot: Array.isArray(parsed.snapshot) ? parsed.snapshot : null,
+    }
+  } catch {
+    return { pendingOps: [], snapshot: null }
+  }
+}
+
+function savePersistedState(serverUrl: string, state: PersistedState) {
+  try {
+    localStorage.setItem(storagePrefix + serverUrl, JSON.stringify(state))
+  } catch {
+    // localStorage quota or disabled — degrade silently
+  }
+}
+
 function nowLabel() {
   return new Intl.DateTimeFormat(undefined, {
     hour: '2-digit',
@@ -226,6 +256,14 @@ export function useCollaborativeTextEditor() {
   let engine: CrdtEngine | null = null
   let isApplyingHistory = false
   let isDestroyed = false
+  let pendingOps: PendingPayload[] = []
+
+  function persistOfflineState() {
+    savePersistedState(serverUrl.value, {
+      pendingOps,
+      snapshot: engine?.nodesJson() ?? null,
+    })
+  }
 
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
@@ -298,8 +336,13 @@ export function useCollaborativeTextEditor() {
 
   function sendToServer(payload: Record<string, unknown>) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      hasUnsavedChanges.value = true
-      statusMessage.value = 'Editing locally; reconnect to sync'
+      // sync_request is meaningless to queue — it only makes sense live.
+      if (payload.type !== 'sync_request') {
+        pendingOps.push(payload)
+        persistOfflineState()
+        hasUnsavedChanges.value = true
+        statusMessage.value = `Editing offline; ${pendingOps.length} op(s) queued`
+      }
       return false
     }
 
@@ -326,7 +369,21 @@ export function useCollaborativeTextEditor() {
     try {
       engine = await createCrdtEngine()
       wasmReady.value = true
-      statusMessage.value = 'CRDT ready'
+
+      // Restore any offline state for this server URL: previously queued ops
+      // (to flush on reconnect) and the last snapshot (so the local document
+      // survives a page reload while offline).
+      const persisted = loadPersistedState(serverUrl.value)
+      pendingOps = persisted.pendingOps
+      if (persisted.snapshot && persisted.snapshot.length > 0) {
+        engine.loadSnapshot(persisted.snapshot)
+        editorText.value = engine.toString()
+        recordHistory(editorText.value)
+      }
+
+      statusMessage.value = pendingOps.length > 0
+        ? `CRDT ready; ${pendingOps.length} offline op(s) pending`
+        : 'CRDT ready'
       return true
     } catch (error) {
       wasmReady.value = false
@@ -589,6 +646,7 @@ export function useCollaborativeTextEditor() {
 
     editorText.value = engine.toString()
     normalizeRemoteCursorAnchors()
+    persistOfflineState()
     statusMessage.value = isConnected.value ? 'Editing with CRDT sync' : 'Editing locally'
     return true
   }
@@ -842,7 +900,23 @@ export function useCollaborativeTextEditor() {
 
     socket.onopen = () => {
       socketState.value = 'connected'
-      statusMessage.value = 'Connected to server'
+      const queuedCount = pendingOps.length
+
+      // Flush queued offline ops BEFORE requesting sync, so the snapshot the
+      // server returns already includes our merged edits. The CRDT guarantees
+      // convergence regardless of how stale the queued ops are.
+      if (queuedCount > 0 && socket) {
+        for (const op of pendingOps) {
+          socket.send(JSON.stringify(op))
+        }
+        pendingOps = []
+        persistOfflineState()
+      }
+
+      statusMessage.value = queuedCount > 0
+        ? `Reconnected; replayed ${queuedCount} offline op(s)`
+        : 'Connected to server'
+      hasUnsavedChanges.value = false
       lastSentCursorUpdate = ''
       requestFullSync()
       scheduleCursorUpdate()
