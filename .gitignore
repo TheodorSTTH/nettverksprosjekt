@@ -1,6 +1,17 @@
-#ignore all **/*.md files
+# ignore all **/*.md files
 **/*.md
 
-#EXCEPT for ignoring README
+# EXCEPT for README
 !README.md
 !**/README.md
+
+# CMake build output
+build/
+cmake-build-*/
+.cmake-deps/
+
+# CMake cache files that may land in the source tree
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
