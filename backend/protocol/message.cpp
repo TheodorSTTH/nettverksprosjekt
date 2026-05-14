@@ -59,6 +59,8 @@ std::string type_string(MessageType type) {
             return "delete";
         case MessageType::SyncRequest:
             return "sync_request";
+        case MessageType::SaveRequest:
+            return "save_request";
         case MessageType::RemoteInsert:
             return "remote_insert";
         case MessageType::RemoteDelete:
@@ -97,6 +99,7 @@ MessageType message_type(const nlohmann::json& message) {
     if (type == "insert") return MessageType::Insert;
     if (type == "delete") return MessageType::Delete;
     if (type == "sync_request") return MessageType::SyncRequest;
+    if (type == "save_request") return MessageType::SaveRequest;
     if (type == "remote_insert") return MessageType::RemoteInsert;
     if (type == "remote_delete") return MessageType::RemoteDelete;
     if (type == "cursor_update") return MessageType::CursorUpdate;
@@ -380,6 +383,7 @@ ParseResult validate_client_message(const nlohmann::json& message) {
         case MessageType::SetTitle:
             return parse_set_title(message) ? ParseResult{true, {}} : ParseResult{false, "invalid set_title message"};
         case MessageType::SyncRequest:
+        case MessageType::SaveRequest:
             return ParseResult{true, {}};
         default:
             return ParseResult{false, "unknown message type"};

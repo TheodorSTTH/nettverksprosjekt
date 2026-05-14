@@ -71,6 +71,34 @@ Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemme
 3. (Valgfri) Skriv inn `ws://<lokal-ip-til-annen-bruker->:3030/ws` i serverfeltet for å redigere data hos en annen bruker
 4. Rediger tekst, endre tittel, klikk på cookie og lev livet
 
+### Justere forsinkelse på serveroppdateringer
+
+Backenden har en kunstig forsinkelse før den sender CRDT-oppdateringer videre til klientene. Dette gjør det enklere å se hvordan CRDT-ene håndterer samtidige endringer og konflikter.
+
+Verdien kan endres i `backend/server/websocket_server.cpp`:
+
+```cpp
+constexpr auto kClientUpdateInterval = std::chrono::seconds(5);
+```
+
+Sett tallet høyere for å gjøre oppdateringene tregere og lettere å observere, for eksempel:
+
+```cpp
+constexpr auto kClientUpdateInterval = std::chrono::seconds(10);
+```
+
+Sett verdien til `0` for at applikasjonen skal oppføre seg mer som live updates:
+
+```cpp
+constexpr auto kClientUpdateInterval = std::chrono::seconds(0);
+```
+
+Etter at verdien er endret må backend bygges og startes på nytt:
+
+```bash
+docker compose up -d --build backend
+```
+
 ## Hvordan kjøre tester
 
 Kjør `./run-tests.sh` i roten av prosjektet for å kjøre tester. Dette kan ta en stund.
