@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <utility>
 
-#include "crtd/clock.hpp"
+#include "crdt/clock.hpp"
 
 namespace crdt {
 

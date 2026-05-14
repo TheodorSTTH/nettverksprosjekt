@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 
-#include "crtd/lww_register.hpp"
+#include "crdt/lww_register.hpp"
 
 namespace {
 
