@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,8 +34,9 @@ struct RGAID {
 
 struct RGAIDHash {
     std::size_t operator()(const RGAID& id) const noexcept {
-        return (static_cast<std::size_t>(id.peer_id) << 32)
-             ^ static_cast<std::size_t>(id.sequence);
+        const auto combined = (static_cast<std::uint64_t>(id.peer_id) << 32)
+                            ^ static_cast<std::uint64_t>(id.sequence);
+        return std::hash<std::uint64_t>{}(combined);
     }
 };
 
