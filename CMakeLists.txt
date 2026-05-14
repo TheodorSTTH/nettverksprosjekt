@@ -64,23 +64,31 @@ target_include_directories(uWebSockets INTERFACE ${uwebsockets_SOURCE_DIR}/src)
 target_link_libraries(uWebSockets INTERFACE uSockets)
 
 # ---------------------------------------------------------------------------
-# Shared logic sources (used by both server and tests)
+# Shared CRDT sources (used by backend, WebAssembly bindings, and tests)
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE SHARED_CORE_SOURCES
     shared/crdt/*.cpp
-    shared/protocol/*.cpp
-    shared/server/document_state.cpp
 )
 
-set(SHARED_SERVER_SOURCES
-    shared/server/websocket_server.cpp
+file(GLOB_RECURSE BACKEND_CORE_SOURCES
+    backend/protocol/*.cpp
+    backend/server/document_state.cpp
+)
+
+set(BACKEND_SERVER_SOURCES
+    backend/server/websocket_server.cpp
 )
 
 # ---------------------------------------------------------------------------
 # Main server executable
 # ---------------------------------------------------------------------------
-add_executable(crdt_server backend/main.cpp ${SHARED_CORE_SOURCES} ${SHARED_SERVER_SOURCES})
-target_include_directories(crdt_server PRIVATE shared)
+add_executable(crdt_server
+    backend/main.cpp
+    ${SHARED_CORE_SOURCES}
+    ${BACKEND_CORE_SOURCES}
+    ${BACKEND_SERVER_SOURCES}
+)
+target_include_directories(crdt_server PRIVATE backend shared)
 target_link_libraries(crdt_server PRIVATE
     nlohmann_json::nlohmann_json
     uWebSockets
@@ -103,10 +111,13 @@ if(BUILD_TESTS)
 
     enable_testing()
 
-    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS shared/tests/*.cpp)
+    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
+        shared/tests/*.cpp
+        backend/tests/*.cpp
+    )
     if(TEST_SOURCES)
-        add_executable(crdt_tests ${TEST_SOURCES} ${SHARED_CORE_SOURCES})
-        target_include_directories(crdt_tests PRIVATE shared)
+        add_executable(crdt_tests ${TEST_SOURCES} ${SHARED_CORE_SOURCES} ${BACKEND_CORE_SOURCES})
+        target_include_directories(crdt_tests PRIVATE backend shared)
         target_link_libraries(crdt_tests PRIVATE
             Catch2::Catch2WithMain
             nlohmann_json::nlohmann_json
@@ -115,6 +126,6 @@ if(BUILD_TESTS)
         include(Catch)
         catch_discover_tests(crdt_tests)
     else()
-        message(STATUS "BUILD_TESTS=ON but no test files found in shared/tests/")
+        message(STATUS "BUILD_TESTS=ON but no test files found in shared/tests/ or backend/tests/")
     endif()
 endif()
