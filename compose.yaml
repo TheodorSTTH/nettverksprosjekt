@@ -11,5 +11,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      additional_contexts:
+        shared: ./shared
     ports:
       - "3030:3030"
