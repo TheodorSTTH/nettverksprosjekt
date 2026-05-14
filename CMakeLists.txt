@@ -45,6 +45,7 @@ target_include_directories(uSockets PUBLIC ${usockets_SOURCE_DIR}/src)
 # Disable SSL to avoid the OpenSSL/wolfSSL dependency.
 target_compile_definitions(uSockets PUBLIC LIBUS_NO_SSL)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 target_link_libraries(uSockets PUBLIC Threads::Threads)
 
 # ---------------------------------------------------------------------------
@@ -63,22 +64,27 @@ target_include_directories(uWebSockets INTERFACE ${uwebsockets_SOURCE_DIR}/src)
 target_link_libraries(uWebSockets INTERFACE uSockets)
 
 # ---------------------------------------------------------------------------
-# Shared CRDT sources (used by both server and tests)
+# Shared logic sources (used by both server and tests)
 # ---------------------------------------------------------------------------
-file(GLOB_RECURSE SHARED_SOURCES
+file(GLOB_RECURSE SHARED_CORE_SOURCES
     shared/crdt/*.cpp
-    shared/server/*.cpp
     shared/protocol/*.cpp
+    shared/server/document_state.cpp
+)
+
+set(SHARED_SERVER_SOURCES
+    shared/server/websocket_server.cpp
 )
 
 # ---------------------------------------------------------------------------
 # Main server executable
 # ---------------------------------------------------------------------------
-add_executable(crdt_server backend/main.cpp ${SHARED_SOURCES})
+add_executable(crdt_server backend/main.cpp ${SHARED_CORE_SOURCES} ${SHARED_SERVER_SOURCES})
 target_include_directories(crdt_server PRIVATE shared)
 target_link_libraries(crdt_server PRIVATE
     nlohmann_json::nlohmann_json
     uWebSockets
+    ZLIB::ZLIB
 )
 
 # ---------------------------------------------------------------------------
@@ -99,11 +105,12 @@ if(BUILD_TESTS)
 
     file(GLOB TEST_SOURCES shared/tests/*.cpp)
     if(TEST_SOURCES)
-        add_executable(crdt_tests ${TEST_SOURCES} ${SHARED_SOURCES})
+        add_executable(crdt_tests ${TEST_SOURCES} ${SHARED_CORE_SOURCES})
         target_include_directories(crdt_tests PRIVATE shared)
         target_link_libraries(crdt_tests PRIVATE
             Catch2::Catch2WithMain
             nlohmann_json::nlohmann_json
+            ZLIB::ZLIB
         )
         include(Catch)
         catch_discover_tests(crdt_tests)
