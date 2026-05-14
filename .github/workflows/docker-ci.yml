@@ -1,0 +1,75 @@
+name: Docker CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'shared/**'
+      - 'compose.yaml'
+      - 'CMakeLists.txt'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'shared/**'
+      - 'compose.yaml'
+      - 'CMakeLists.txt'
+
+jobs:
+  docker-build-health:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          tags: crdt-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: false
+          tags: crdt-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start containers
+        run: docker compose up -d
+
+      - name: Wait for containers to be ready
+        run: |
+          echo "Waiting for containers..."
+          sleep 5
+          docker compose ps
+
+      - name: Check all containers are running
+        run: |
+          if docker compose ps | grep -E "Exit|exited|unhealthy"; then
+            echo "One or more containers failed to start"
+            docker compose logs
+            exit 1
+          fi
+          echo "All containers running"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down
