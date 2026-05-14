@@ -278,6 +278,19 @@ private:
                     break;
                 }
 
+                case protocol::MessageType::SaveRequest: {
+                    send_to_peer(
+                        queued.sender_peer_id,
+                        dump_message(document_.snapshot_json())
+                    );
+                    send_to_peer(
+                        queued.sender_peer_id,
+                        dump_message(document_.cookie_counter_state(queued.sender_peer_id))
+                    );
+
+                    break;
+                }
+
                 default:
                     send_to_peer(
                         queued.sender_peer_id,
@@ -374,10 +387,10 @@ void WebSocketServer::run() {
                            dump_message(document_.cookie_counter_state(data->peer_id)),
                            uWS::OpCode::TEXT
                        );
-                   },
+               },
 
                .message =
-                   [this, &delayed_operations, &connected_clients](auto* ws, std::string_view raw_message, uWS::OpCode) {
+                   [this, &delayed_operations](auto* ws, std::string_view raw_message, uWS::OpCode) {
                        nlohmann::json message;
 
                        try {
@@ -409,6 +422,13 @@ void WebSocketServer::run() {
                                ws->send(
                                    dump_message(document_.cookie_counter_state(ws->getUserData()->peer_id)),
                                    uWS::OpCode::TEXT
+                               );
+                               return;
+
+                           case protocol::MessageType::SaveRequest:
+                               delayed_operations.enqueue(
+                                   ws->getUserData()->peer_id,
+                                   message
                                );
                                return;
 

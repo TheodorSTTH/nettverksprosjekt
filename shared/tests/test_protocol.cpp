@@ -119,6 +119,14 @@ TEST_CASE("Counter messages validate and serialize", "[protocol]") {
     REQUIRE(state.at("own_count") == 12);
 }
 
+TEST_CASE("Save request is a valid client message", "[protocol]") {
+    const auto message = nlohmann::json{{"type", "save_request"}};
+
+    REQUIRE(protocol::message_type(message) == protocol::MessageType::SaveRequest);
+    REQUIRE(protocol::message_type_name(protocol::MessageType::SaveRequest) == "save_request");
+    REQUIRE(protocol::validate_client_message(message).ok);
+}
+
 TEST_CASE("Malformed client messages are rejected", "[protocol]") {
     const auto missing_parent = nlohmann::json{
         {"type", "insert"},

@@ -314,8 +314,8 @@ export function useCollaborativeTextEditor() {
   }
 
   function saveDocument() {
-    requestFullSync()
-    statusMessage.value = isConnected.value ? 'Requested latest server state' : 'Reconnect to sync'
+    const sent = sendToServer({ type: 'save_request' })
+    statusMessage.value = sent ? 'Saving after pending updates' : 'Reconnect to sync'
   }
 
   async function initializeEngine() {
