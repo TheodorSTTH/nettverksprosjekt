@@ -35,6 +35,12 @@ type CursorAnchor = {
   cursorIndex: number
 }
 
+type TextSegment = {
+  text: string
+  start: number
+  end: number
+}
+
 type AssignPeerMessage = {
   type: 'assign_peer_id'
   peer_id: number
@@ -107,24 +113,79 @@ function nowLabel() {
   }).format(new Date())
 }
 
-function commonPrefixLength(left: string, right: string) {
+function textSegments(value: string): TextSegment[] {
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      : null
+
+  if (segmenter) {
+    return Array.from(segmenter.segment(value), (segment) => ({
+      text: segment.segment,
+      start: segment.index,
+      end: segment.index + segment.segment.length,
+    }))
+  }
+
+  const segments: TextSegment[] = []
+  let offset = 0
+  for (const text of Array.from(value)) {
+    segments.push({ text, start: offset, end: offset + text.length })
+    offset += text.length
+  }
+  return segments
+}
+
+function graphemeIndexFromOffset(value: string, offset: number) {
+  const clampedOffset = Math.max(0, Math.min(offset, value.length))
+  const segments = textSegments(value)
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]
+    if (!segment) {
+      continue
+    }
+
+    if (clampedOffset <= segment.start) {
+      return index
+    }
+
+    if (clampedOffset <= segment.end) {
+      return index + 1
+    }
+  }
+
+  return segments.length
+}
+
+function offsetFromGraphemeIndex(value: string, graphemeIndex: number) {
+  const segments = textSegments(value)
+  const clampedIndex = Math.max(0, Math.min(graphemeIndex, segments.length))
+  if (clampedIndex === segments.length) {
+    return value.length
+  }
+
+  return segments[clampedIndex]?.start ?? value.length
+}
+
+function commonPrefixLength(left: TextSegment[], right: TextSegment[]) {
   const max = Math.min(left.length, right.length)
   let index = 0
 
-  while (index < max && left[index] === right[index]) {
+  while (index < max && left[index]?.text === right[index]?.text) {
     index += 1
   }
 
   return index
 }
 
-function commonSuffixLength(left: string, right: string, prefixLength: number) {
+function commonSuffixLength(left: TextSegment[], right: TextSegment[], prefixLength: number) {
   const max = Math.min(left.length - prefixLength, right.length - prefixLength)
   let count = 0
 
   while (
     count < max &&
-    left[left.length - 1 - count] === right[right.length - 1 - count]
+    left[left.length - 1 - count]?.text === right[right.length - 1 - count]?.text
   ) {
     count += 1
   }
@@ -150,7 +211,10 @@ export function useCollaborativeTextEditor() {
 
   // LWW-Register for the document title. Local writes happen only on commit
   // (blur/Enter from DocumentTitle.vue); remote writes resolve via LWW order.
-  const titleRegister = useLWWRegister<string>(fallbackPeerId, defaultTitle)
+  const titleRegister = useLWWRegister<string>(
+    () => peerId.value ?? fallbackPeerId,
+    defaultTitle,
+  )
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
@@ -177,7 +241,7 @@ export function useCollaborativeTextEditor() {
     return Object.entries(remoteCursorAnchors.value)
       .map(([peerId, anchor]) => {
         const numericPeerId = Number(peerId)
-        const cursorIndex = resolveCursorIndex(anchor as CursorAnchor, ids)
+        const cursorIndex = offsetFromGraphemeIndex(editorText.value, resolveCursorIndex(anchor as CursorAnchor, ids))
 
         return {
           peerId: numericPeerId,
@@ -292,26 +356,97 @@ export function useCollaborativeTextEditor() {
 
   function cursorAnchorFromSelection(selection = currentSelection.value): CursorAnchor {
     const ids = visibleIds()
-    const cursorIndex = clampCursorIndex(selection.start, ids.length)
+    const cursorIndex = clampCursorIndex(
+      graphemeIndexFromOffset(editorText.value, selection.start),
+      ids.length,
+    )
     const anchorId = cursorIndex === 0 ? null : ids[cursorIndex - 1] ?? null
 
     return { anchorId, cursorIndex }
   }
 
-  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
-    if (anchor.anchorId) {
-      const anchoredIndex = ids.findIndex((id) => sameId(id, anchor.anchorId as RgaId))
-      if (anchoredIndex !== -1) {
-        return anchoredIndex + 1
+  function normalizeCursorAnchor(anchor: CursorAnchor): CursorAnchor {
+    if (!anchor.anchorId || !engine) {
+      return {
+        anchorId: null,
+        cursorIndex: 0,
       }
     }
 
-    return clampCursorIndex(anchor.cursorIndex, ids.length)
+    const nodes = engine.nodesJson()
+    const anchorIndex = nodes.findIndex((node) => sameId(node.id, anchor.anchorId as RgaId))
+
+    if (anchorIndex === -1) {
+      const ids = visibleIds()
+      return {
+        anchorId: anchor.anchorId,
+        cursorIndex: clampCursorIndex(anchor.cursorIndex, ids.length),
+      }
+    }
+
+    if (!nodes[anchorIndex]?.tombstoned) {
+      const visibleIndex = nodes
+        .slice(0, anchorIndex + 1)
+        .filter((node) => !node.tombstoned)
+        .length
+
+      return {
+        anchorId: anchor.anchorId,
+        cursorIndex: visibleIndex,
+      }
+    }
+
+    for (let index = anchorIndex - 1; index >= 0; index -= 1) {
+      const node = nodes[index]
+      if (node && !node.tombstoned) {
+        const visibleIndex = nodes
+          .slice(0, index + 1)
+          .filter((candidate) => !candidate.tombstoned)
+          .length
+
+        return {
+          anchorId: node.id,
+          cursorIndex: visibleIndex,
+        }
+      }
+    }
+
+    return {
+      anchorId: null,
+      cursorIndex: 0,
+    }
+  }
+
+  function normalizeRemoteCursorAnchors() {
+    const normalizedEntries = Object.entries(remoteCursorAnchors.value).map(([remotePeerId, anchor]) => [
+      remotePeerId,
+      normalizeCursorAnchor(anchor as CursorAnchor),
+    ])
+
+    remoteCursorAnchors.value = Object.fromEntries(normalizedEntries)
+  }
+
+  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
+    const normalized = normalizeCursorAnchor(anchor)
+
+    if (!normalized.anchorId) {
+      return clampCursorIndex(normalized.cursorIndex, ids.length)
+    }
+
+    const anchoredIndex = ids.findIndex((id) => sameId(id, normalized.anchorId as RgaId))
+    if (anchoredIndex !== -1) {
+      return anchoredIndex + 1
+    }
+
+    return clampCursorIndex(normalized.cursorIndex, ids.length)
   }
 
   function captureCursorAnchor() {
     const ids = visibleIds()
-    const cursorIndex = clampCursorIndex(currentSelection.value.start, ids.length)
+    const cursorIndex = clampCursorIndex(
+      graphemeIndexFromOffset(editorText.value, currentSelection.value.start),
+      ids.length,
+    )
 
     return {
       fallbackIds: ids.slice(0, cursorIndex).reverse(),
@@ -330,7 +465,8 @@ export function useCollaborativeTextEditor() {
       }
     }
 
-    const selection = { start: cursorIndex, end: cursorIndex }
+    const offset = offsetFromGraphemeIndex(editorText.value, cursorIndex)
+    const selection = { start: offset, end: offset }
     currentSelection.value = selection
     selectionRestore.value = {
       ...selection,
@@ -382,10 +518,10 @@ export function useCollaborativeTextEditor() {
 
     remoteCursorAnchors.value = {
       ...remoteCursorAnchors.value,
-      [message.peer_id]: {
+      [message.peer_id]: normalizeCursorAnchor({
         anchorId: message.anchor_id,
         cursorIndex: Math.max(0, message.cursor_index),
-      },
+      }),
     }
   }
 
@@ -407,10 +543,12 @@ export function useCollaborativeTextEditor() {
     }
 
     const idsBeforeChange = visibleIds()
-    const prefixLength = commonPrefixLength(previousText, nextText)
-    const suffixLength = commonSuffixLength(previousText, nextText, prefixLength)
-    const deleteCount = previousText.length - prefixLength - suffixLength
-    const insertText = nextText.slice(prefixLength, nextText.length - suffixLength)
+    const previousSegments = textSegments(previousText)
+    const nextSegments = textSegments(nextText)
+    const prefixLength = commonPrefixLength(previousSegments, nextSegments)
+    const suffixLength = commonSuffixLength(previousSegments, nextSegments, prefixLength)
+    const deleteCount = previousSegments.length - prefixLength - suffixLength
+    const insertedSegments = nextSegments.slice(prefixLength, nextSegments.length - suffixLength)
 
     if (prefixLength + deleteCount > idsBeforeChange.length) {
       requestFullSync()
@@ -437,8 +575,8 @@ export function useCollaborativeTextEditor() {
       return false
     }
 
-    for (let index = 0; index < insertText.length; index += 1) {
-      const operation = engine.localInsert(insertText[index] ?? '', parentId)
+    for (const segment of insertedSegments) {
+      const operation = engine.localInsert(segment.text, parentId)
       if (isErrorMessage(operation)) {
         requestFullSync()
         statusMessage.value = operation.message
@@ -450,6 +588,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     statusMessage.value = isConnected.value ? 'Editing with CRDT sync' : 'Editing locally'
     return true
   }
@@ -520,7 +659,7 @@ export function useCollaborativeTextEditor() {
       type: 'set_title',
       value: op.value,
       timestamp: op.metadata.timestamp,
-      peer_id: peerId.value ?? op.metadata.peerId,
+      peer_id: op.metadata.peerId,
     })
   }
 
@@ -536,6 +675,7 @@ export function useCollaborativeTextEditor() {
     const cursorAnchor = captureCursorAnchor()
     engine.loadSnapshot(message.nodes)
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     hasUnsavedChanges.value = false
@@ -564,6 +704,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote insert applied'
@@ -583,6 +724,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote delete applied'
@@ -684,6 +826,7 @@ export function useCollaborativeTextEditor() {
 
     disconnectSocket()
     resetCookieCounterState()
+    titleRegister.reset(defaultTitle)
     socketState.value = 'connecting'
     statusMessage.value = 'Connecting to server'
 
@@ -692,6 +835,7 @@ export function useCollaborativeTextEditor() {
     } catch {
       socketState.value = 'disconnected'
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       statusMessage.value = 'Invalid server URL'
       return
     }
@@ -709,6 +853,7 @@ export function useCollaborativeTextEditor() {
     socket.onerror = () => {
       socketState.value = 'disconnected'
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       statusMessage.value = 'Could not reach server'
     }
 
@@ -718,6 +863,7 @@ export function useCollaborativeTextEditor() {
       socket = null
       remoteCursorAnchors.value = {}
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       lastSentCursorUpdate = ''
     }
   }

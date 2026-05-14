@@ -33,12 +33,10 @@ val error_to_js(const std::string& message) {
 }
 
 val insert_to_js(const crdt::InsertOp& op, const std::string& type) {
-    const std::string character(1, op.value);
-
     val value = val::object();
     value.set("type", type);
-    value.set("value", character);
-    value.set("char", character);
+    value.set("value", op.value);
+    value.set("char", op.value);
     value.set("id", id_to_js(op.id));
     value.set("parent_id", id_to_js(op.parent_id));
     return value;
@@ -73,13 +71,13 @@ public:
         for (unsigned index = 0; index < length; ++index) {
             const val node = nodes[index];
             const auto text = node["value"].as<std::string>();
-            if (text.size() != 1) {
+            if (text.empty()) {
                 continue;
             }
 
             const auto id = id_from_js(node["id"]);
             const auto parent_id = id_from_js(node["parent_id"]);
-            document_.apply_remote(crdt::InsertOp{text[0], id, parent_id});
+            document_.apply_remote(crdt::InsertOp{text, id, parent_id});
 
             if (node["tombstoned"].as<bool>()) {
                 document_.apply_remote(crdt::DeleteOp{id});
@@ -88,8 +86,8 @@ public:
     }
 
     val local_insert(const std::string& text, const val& parent_id_value) {
-        if (text.size() != 1) {
-            return error_to_js("RGA inserts must contain exactly one character");
+        if (text.empty()) {
+            return error_to_js("RGA inserts must contain a character");
         }
 
         const auto parent_id = id_from_js(parent_id_value);
@@ -97,7 +95,7 @@ public:
             return error_to_js("insert parent does not exist");
         }
 
-        return insert_to_js(document_.local_insert(text[0], parent_id), "insert");
+        return insert_to_js(document_.local_insert(text, parent_id), "insert");
     }
 
     val local_delete(const val& target_id_value) {
@@ -128,11 +126,11 @@ public:
             text = operation["char"].as<std::string>();
         }
 
-        if (text.size() != 1) {
+        if (text.empty()) {
             return false;
         }
 
-        document_.apply_remote(crdt::InsertOp{text[0], id, parent_id});
+        document_.apply_remote(crdt::InsertOp{text, id, parent_id});
         return true;
     }
 
@@ -169,7 +167,7 @@ public:
 
         for (const auto& node : document_.nodes()) {
             val item = val::object();
-            item.set("value", std::string(1, node.value));
+            item.set("value", node.value);
             item.set("id", id_to_js(node.id));
             item.set("parent_id", id_to_js(node.parent_id));
             item.set("tombstoned", node.tombstoned);

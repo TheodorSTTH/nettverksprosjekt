@@ -225,6 +225,59 @@ private:
                     break;
                 }
 
+                case protocol::MessageType::CursorUpdate: {
+                    const auto cursor = protocol::parse_cursor_update(queued.message);
+
+                    if (!cursor) {
+                        send_to_peer(
+                            queued.sender_peer_id,
+                            dump_message(protocol::serialize_error("invalid cursor update"))
+                        );
+                        continue;
+                    }
+
+                    if (!is_peer_connected(queued.sender_peer_id)) {
+                        continue;
+                    }
+
+                    broadcast_except(
+                        queued.sender_peer_id,
+                        dump_message(protocol::serialize_remote_cursor(
+                            queued.sender_peer_id,
+                            *cursor
+                        ))
+                    );
+
+                    break;
+                }
+
+                case protocol::MessageType::SetTitle: {
+                    const auto op = protocol::parse_set_title(queued.message);
+
+                    if (!op) {
+                        send_to_peer(
+                            queued.sender_peer_id,
+                            dump_message(protocol::serialize_error("invalid set_title message"))
+                        );
+                        continue;
+                    }
+
+                    document_.apply_set_title(*op);
+                    changed = true;
+
+                    // Broadcast the authoritative state to ALL clients (including sender)
+                    // so any client whose write lost the LWW race converges to the winner.
+                    auto state_msg = document_.title_state();
+                    state_msg["type"] = "set_title";
+                    const auto serialized = dump_message(state_msg);
+
+                    for (const auto& [peer_id, client] : clients_) {
+                        client->send(serialized, uWS::OpCode::TEXT);
+                    }
+
+                    break;
+                }
+
                 default:
                     send_to_peer(
                         queued.sender_peer_id,
@@ -252,6 +305,10 @@ private:
         if (auto client = clients_.find(peer_id); client != clients_.end()) {
             client->second->send(message, uWS::OpCode::TEXT);
         }
+    }
+
+    bool is_peer_connected(std::uint32_t peer_id) const {
+        return clients_.find(peer_id) != clients_.end();
     }
 
     void broadcast_except(std::uint32_t sender_peer_id, const std::string& message) {
@@ -320,7 +377,7 @@ void WebSocketServer::run() {
                    },
 
                .message =
-                   [this, &connected_clients, &delayed_operations](auto* ws, std::string_view raw_message, uWS::OpCode) {
+                   [this, &delayed_operations, &connected_clients](auto* ws, std::string_view raw_message, uWS::OpCode) {
                        nlohmann::json message;
 
                        try {
@@ -376,54 +433,19 @@ void WebSocketServer::run() {
                                );
                                return;
 
-                           case protocol::MessageType::SetTitle: {
-                               const auto op = protocol::parse_set_title(message);
-                               if (!op) {
-                                   ws->send(
-                                       dump_message(protocol::serialize_error("invalid set_title message")),
-                                       uWS::OpCode::TEXT
-                                   );
-                                   return;
-                               }
-
-                               document_.apply_set_title(*op);
-
-                               // Broadcast the authoritative state to all clients (including sender)
-                               // so any client whose write lost the LWW race converges to the winner.
-                               auto state_msg = document_.title_state();
-                               state_msg["type"] = "set_title";
-                               const auto serialized = dump_message(state_msg);
-
-                               for (const auto& [peer_id, client] : connected_clients) {
-                                   client->send(serialized, uWS::OpCode::TEXT);
-                               }
-
-                               return;
-                           }
-
-                           case protocol::MessageType::CursorUpdate: {
-                               const auto cursor = protocol::parse_cursor_update(message);
-                               if (!cursor) {
-                                   ws->send(
-                                       dump_message(protocol::serialize_error("invalid cursor update")),
-                                       uWS::OpCode::TEXT
-                                   );
-                                   return;
-                               }
-
-                               const auto sender_peer_id = ws->getUserData()->peer_id;
-                               const auto remote_cursor = dump_message(
-                                   protocol::serialize_remote_cursor(sender_peer_id, *cursor)
+                           case protocol::MessageType::SetTitle:
+                               delayed_operations.enqueue(
+                                   ws->getUserData()->peer_id,
+                                   message
                                );
-
-                               for (const auto& [peer_id, client] : connected_clients) {
-                                   if (peer_id != sender_peer_id) {
-                                       client->send(remote_cursor, uWS::OpCode::TEXT);
-                                   }
-                               }
-
                                return;
-                           }
+
+                           case protocol::MessageType::CursorUpdate:
+                               delayed_operations.enqueue(
+                                   ws->getUserData()->peer_id,
+                                   message
+                               );
+                               return;
 
                            default:
                                ws->send(

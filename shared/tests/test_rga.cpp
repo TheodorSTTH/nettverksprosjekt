@@ -29,6 +29,16 @@ TEST_CASE("Sequential inserts build correct string", "[rga][basic]") {
     REQUIRE(rga.to_string() == "hello");
 }
 
+TEST_CASE("Sequential Unicode inserts build correct string", "[rga][unicode]") {
+    RGA rga(1);
+    auto ae = rga.local_insert("æ", RGAID::root());
+    auto oe = rga.local_insert("ø", ae.id);
+    rga.local_insert("å", oe.id);
+
+    REQUIRE(rga.to_string() == "æøå");
+    REQUIRE(rga.nodes().size() == 3);
+}
+
 TEST_CASE("Delete removes character from visible text", "[rga][basic]") {
     RGA rga(1);
     auto op = rga.local_insert('X', RGAID::root());
@@ -168,6 +178,18 @@ TEST_CASE("Concurrent inserts at same parent converge regardless of arrival orde
     auto op2 = r2.local_insert('B', id_a);
 
     // Apply in opposite orders.
+    r1.apply_remote(op2);
+    r2.apply_remote(op1);
+
+    REQUIRE(r1.to_string() == r2.to_string());
+}
+
+TEST_CASE("Concurrent Unicode inserts converge regardless of arrival order", "[rga][unicode][convergence]") {
+    RGA r1(1), r2(2);
+
+    auto op1 = r1.local_insert("æ", RGAID::root());
+    auto op2 = r2.local_insert("ø", RGAID::root());
+
     r1.apply_remote(op2);
     r2.apply_remote(op1);
 

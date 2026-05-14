@@ -23,15 +23,17 @@ export function isNewer(candidate: LWWMetadata, current: LWWMetadata): boolean {
   return candidate.peerId > current.peerId
 }
 
-export function useLWWRegister<T>(peerId: number, initialValue: T) {
+export function useLWWRegister<T>(getPeerId: () => number, initialValue: T) {
   const value = ref(initialValue) as { value: T }
-  const metadata = ref<LWWMetadata>({ timestamp: 0, peerId })
+  const metadata = ref<LWWMetadata>({ timestamp: 0, peerId: getPeerId() })
   const clock = ref(0)
 
   // Local write: tick the Lamport clock, return the broadcastable operation.
+  // peerId is read at write time so the local metadata always matches the id
+  // the client is currently using on the wire (after assign_peer_id).
   function set(newValue: T): LWWOperation<T> {
     clock.value += 1
-    metadata.value = { timestamp: clock.value, peerId }
+    metadata.value = { timestamp: clock.value, peerId: getPeerId() }
     value.value = newValue
     return { value: newValue, metadata: { ...metadata.value } }
   }
@@ -48,10 +50,19 @@ export function useLWWRegister<T>(peerId: number, initialValue: T) {
     return false
   }
 
+  // Reset to a clean local state (used on disconnect). Metadata.timestamp is
+  // set to 0 so the next remote op from the server is guaranteed to win.
+  function reset(nextValue: T) {
+    value.value = nextValue
+    metadata.value = { timestamp: 0, peerId: getPeerId() }
+    clock.value = 0
+  }
+
   return {
     value: computed(() => value.value),
     metadata: computed(() => metadata.value),
     set,
     apply,
+    reset,
   }
 }
