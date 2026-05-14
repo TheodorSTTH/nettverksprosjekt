@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <utility>
 
 #include "crdt/clock.hpp"
@@ -20,13 +21,8 @@ inline bool operator!=(const LWWMetadata& left, const LWWMetadata& right) {
     return !(left == right);
 }
 
-inline bool is_newer(const LWWMetadata& candidate, const LWWMetadata& current) {
-    if (candidate.timestamp != current.timestamp) {
-        return candidate.timestamp > current.timestamp;
-    }
-
-    return candidate.peer_id > current.peer_id;
-}
+// Total ordering on writes: timestamp first, peer_id as deterministic tiebreaker.
+bool is_newer(const LWWMetadata& candidate, const LWWMetadata& current);
 
 template <typename T>
 struct LWWOperation {
@@ -37,35 +33,21 @@ struct LWWOperation {
 template <typename T>
 class LWWRegister {
 public:
-    explicit LWWRegister(std::uint32_t peer_id, T initial_value = T{})
-        : value_(std::move(initial_value)), metadata_{0, peer_id}, clock_(peer_id) {}
+    explicit LWWRegister(std::uint32_t peer_id, T initial_value = T{});
 
-    LWWOperation<T> set(T new_value) {
-        metadata_ = {clock_.tick(), clock_.peer_id()};
-        value_ = std::move(new_value);
-        return {value_, metadata_};
-    }
+    // Local write. Ticks the Lamport clock, replaces the value, and returns
+    // the operation that callers can broadcast to other replicas.
+    LWWOperation<T> set(T new_value);
 
-    void apply(const LWWOperation<T>& operation) {
-        clock_.observe(operation.metadata.timestamp);
+    // Apply a remote operation. Observes the remote timestamp into the local
+    // clock, then keeps whichever write wins under is_newer().
+    void apply(const LWWOperation<T>& operation);
 
-        if (is_newer(operation.metadata, metadata_)) {
-            value_ = operation.value;
-            metadata_ = operation.metadata;
-        }
-    }
+    // Convenience: merge state from another replica directly.
+    void merge(const LWWRegister<T>& other);
 
-    void merge(const LWWRegister<T>& other) {
-        apply({other.value(), other.metadata()});
-    }
-
-    const T& value() const {
-        return value_;
-    }
-
-    LWWMetadata metadata() const {
-        return metadata_;
-    }
+    const T& value() const;
+    LWWMetadata metadata() const;
 
 private:
     T value_;
@@ -73,4 +55,7 @@ private:
     LamportClock clock_;
 };
 
-}
+// Explicit instantiations live in lww_register.cpp.
+extern template class LWWRegister<std::string>;
+
+}  // namespace crdt
