@@ -44,6 +44,17 @@ TEST_CASE("Insert and delete operations round-trip", "[protocol]") {
     REQUIRE(parsed_delete->target_id == delete_op.target_id);
 }
 
+TEST_CASE("Unicode insert operation round-trips", "[protocol]") {
+    const InsertOp insert{"å", RGAID{1, 2}, RGAID{0, 0}};
+
+    const auto parsed_insert = protocol::parse_insert(protocol::serialize_insert(insert));
+
+    REQUIRE(parsed_insert.has_value());
+    REQUIRE(parsed_insert->value == "å");
+    REQUIRE(parsed_insert->id == insert.id);
+    REQUIRE(parsed_insert->parent_id == insert.parent_id);
+}
+
 TEST_CASE("Cursor presence messages round-trip", "[protocol]") {
     const protocol::CursorUpdate cursor{RGAID{1, 2}, 4};
 
@@ -162,4 +173,16 @@ TEST_CASE("Sync state contains all nodes and tombstones", "[protocol]") {
     REQUIRE(snapshot.at("visible_text") == "b");
     REQUIRE(snapshot.at("nodes").size() == 2);
     REQUIRE(snapshot.at("nodes").at(0).at("tombstoned") == true);
+}
+
+TEST_CASE("Sync state contains Unicode node values", "[protocol]") {
+    RGA document(1);
+    document.local_insert("æ", RGAID::root());
+
+    const auto snapshot = protocol::serialize_sync_state(document);
+    const auto loaded = protocol::document_from_snapshot(snapshot, 2);
+
+    REQUIRE(snapshot.at("visible_text") == "æ");
+    REQUIRE(snapshot.at("nodes").at(0).at("value") == "æ");
+    REQUIRE(loaded.to_string() == "æ");
 }

@@ -33,6 +33,12 @@ type CursorAnchor = {
   cursorIndex: number
 }
 
+type TextSegment = {
+  text: string
+  start: number
+  end: number
+}
+
 type AssignPeerMessage = {
   type: 'assign_peer_id'
   peer_id: number
@@ -90,24 +96,79 @@ function nowLabel() {
   }).format(new Date())
 }
 
-function commonPrefixLength(left: string, right: string) {
+function textSegments(value: string): TextSegment[] {
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      : null
+
+  if (segmenter) {
+    return Array.from(segmenter.segment(value), (segment) => ({
+      text: segment.segment,
+      start: segment.index,
+      end: segment.index + segment.segment.length,
+    }))
+  }
+
+  const segments: TextSegment[] = []
+  let offset = 0
+  for (const text of Array.from(value)) {
+    segments.push({ text, start: offset, end: offset + text.length })
+    offset += text.length
+  }
+  return segments
+}
+
+function graphemeIndexFromOffset(value: string, offset: number) {
+  const clampedOffset = Math.max(0, Math.min(offset, value.length))
+  const segments = textSegments(value)
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]
+    if (!segment) {
+      continue
+    }
+
+    if (clampedOffset <= segment.start) {
+      return index
+    }
+
+    if (clampedOffset <= segment.end) {
+      return index + 1
+    }
+  }
+
+  return segments.length
+}
+
+function offsetFromGraphemeIndex(value: string, graphemeIndex: number) {
+  const segments = textSegments(value)
+  const clampedIndex = Math.max(0, Math.min(graphemeIndex, segments.length))
+  if (clampedIndex === segments.length) {
+    return value.length
+  }
+
+  return segments[clampedIndex]?.start ?? value.length
+}
+
+function commonPrefixLength(left: TextSegment[], right: TextSegment[]) {
   const max = Math.min(left.length, right.length)
   let index = 0
 
-  while (index < max && left[index] === right[index]) {
+  while (index < max && left[index]?.text === right[index]?.text) {
     index += 1
   }
 
   return index
 }
 
-function commonSuffixLength(left: string, right: string, prefixLength: number) {
+function commonSuffixLength(left: TextSegment[], right: TextSegment[], prefixLength: number) {
   const max = Math.min(left.length - prefixLength, right.length - prefixLength)
   let count = 0
 
   while (
     count < max &&
-    left[left.length - 1 - count] === right[right.length - 1 - count]
+    left[left.length - 1 - count]?.text === right[right.length - 1 - count]?.text
   ) {
     count += 1
   }
@@ -156,7 +217,7 @@ export function useCollaborativeTextEditor() {
     return Object.entries(remoteCursorAnchors.value)
       .map(([peerId, anchor]) => {
         const numericPeerId = Number(peerId)
-        const cursorIndex = resolveCursorIndex(anchor, ids)
+        const cursorIndex = offsetFromGraphemeIndex(editorText.value, resolveCursorIndex(anchor, ids))
 
         return {
           peerId: numericPeerId,
@@ -271,7 +332,10 @@ export function useCollaborativeTextEditor() {
 
   function cursorAnchorFromSelection(selection = currentSelection.value): CursorAnchor {
     const ids = visibleIds()
-    const cursorIndex = clampCursorIndex(selection.start, ids.length)
+    const cursorIndex = clampCursorIndex(
+      graphemeIndexFromOffset(editorText.value, selection.start),
+      ids.length,
+    )
     const anchorId = cursorIndex === 0 ? null : ids[cursorIndex - 1] ?? null
 
     return { anchorId, cursorIndex }
@@ -290,7 +354,10 @@ export function useCollaborativeTextEditor() {
 
   function captureCursorAnchor() {
     const ids = visibleIds()
-    const cursorIndex = clampCursorIndex(currentSelection.value.start, ids.length)
+    const cursorIndex = clampCursorIndex(
+      graphemeIndexFromOffset(editorText.value, currentSelection.value.start),
+      ids.length,
+    )
 
     return {
       fallbackIds: ids.slice(0, cursorIndex).reverse(),
@@ -309,7 +376,8 @@ export function useCollaborativeTextEditor() {
       }
     }
 
-    const selection = { start: cursorIndex, end: cursorIndex }
+    const offset = offsetFromGraphemeIndex(editorText.value, cursorIndex)
+    const selection = { start: offset, end: offset }
     currentSelection.value = selection
     selectionRestore.value = {
       ...selection,
@@ -386,10 +454,12 @@ export function useCollaborativeTextEditor() {
     }
 
     const idsBeforeChange = visibleIds()
-    const prefixLength = commonPrefixLength(previousText, nextText)
-    const suffixLength = commonSuffixLength(previousText, nextText, prefixLength)
-    const deleteCount = previousText.length - prefixLength - suffixLength
-    const insertText = nextText.slice(prefixLength, nextText.length - suffixLength)
+    const previousSegments = textSegments(previousText)
+    const nextSegments = textSegments(nextText)
+    const prefixLength = commonPrefixLength(previousSegments, nextSegments)
+    const suffixLength = commonSuffixLength(previousSegments, nextSegments, prefixLength)
+    const deleteCount = previousSegments.length - prefixLength - suffixLength
+    const insertedSegments = nextSegments.slice(prefixLength, nextSegments.length - suffixLength)
 
     if (prefixLength + deleteCount > idsBeforeChange.length) {
       requestFullSync()
@@ -416,8 +486,8 @@ export function useCollaborativeTextEditor() {
       return false
     }
 
-    for (let index = 0; index < insertText.length; index += 1) {
-      const operation = engine.localInsert(insertText[index] ?? '', parentId)
+    for (const segment of insertedSegments) {
+      const operation = engine.localInsert(segment.text, parentId)
       if (isErrorMessage(operation)) {
         requestFullSync()
         statusMessage.value = operation.message

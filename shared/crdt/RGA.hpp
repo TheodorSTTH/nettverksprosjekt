@@ -5,6 +5,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace crdt {
@@ -41,16 +42,33 @@ struct RGAIDHash {
 };
 
 struct RGANode {
-    char value = '\0';
+    std::string value;
     RGAID id{};
     RGAID parent_id{};
     bool tombstoned = false;
+
+    RGANode() = default;
+    RGANode(std::string node_value, RGAID node_id, RGAID node_parent_id, bool node_tombstoned)
+        : value(std::move(node_value)),
+          id(node_id),
+          parent_id(node_parent_id),
+          tombstoned(node_tombstoned) {}
+    RGANode(char node_value, RGAID node_id, RGAID node_parent_id, bool node_tombstoned)
+        : RGANode(std::string(1, node_value), node_id, node_parent_id, node_tombstoned) {}
 };
 
 struct InsertOp {
-    char value;
+    std::string value;
     RGAID id;
     RGAID parent_id;
+
+    InsertOp() = default;
+    InsertOp(std::string op_value, RGAID op_id, RGAID op_parent_id)
+        : value(std::move(op_value)),
+          id(op_id),
+          parent_id(op_parent_id) {}
+    InsertOp(char op_value, RGAID op_id, RGAID op_parent_id)
+        : InsertOp(std::string(1, op_value), op_id, op_parent_id) {}
 };
 
 struct DeleteOp {
@@ -67,6 +85,7 @@ public:
     explicit RGA(std::uint32_t peer_id);
 
     // Local edits. The returned op must be broadcast to peers verbatim.
+    InsertOp local_insert(std::string value, RGAID parent_id);
     InsertOp local_insert(char value, RGAID parent_id);
     DeleteOp local_delete(RGAID target_id);
 
