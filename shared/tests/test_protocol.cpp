@@ -88,6 +88,26 @@ TEST_CASE("Peer left message includes peer id", "[protocol]") {
     REQUIRE(message.at("peer_id") == 7);
 }
 
+TEST_CASE("Counter messages validate and serialize", "[protocol]") {
+    const auto update = nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "cookies"},
+        {"count", 12},
+    };
+    const auto parsed = protocol::parse_counter_update(update);
+
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->counter == "cookies");
+    REQUIRE(parsed->count == 12);
+    REQUIRE(protocol::validate_client_message(update).ok);
+
+    const auto state = protocol::serialize_counter_state("cookies", 42, 12);
+    REQUIRE(state.at("type") == "counter_state");
+    REQUIRE(state.at("counter") == "cookies");
+    REQUIRE(state.at("value") == 42);
+    REQUIRE(state.at("own_count") == 12);
+}
+
 TEST_CASE("Malformed client messages are rejected", "[protocol]") {
     const auto missing_parent = nlohmann::json{
         {"type", "insert"},
@@ -109,6 +129,18 @@ TEST_CASE("Malformed client messages are rejected", "[protocol]") {
         {"type", "cursor_update"},
         {"anchor_id", nullptr},
         {"cursor_index", -1},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "cookies"},
+        {"count", -1},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "other"},
+        {"count", 1},
     }).ok);
 
     REQUIRE(protocol::validate_client_message(nlohmann::json{
