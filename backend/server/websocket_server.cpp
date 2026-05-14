@@ -28,7 +28,7 @@ struct ClientData {
 using WebSocket = uWS::WebSocket<false, true, ClientData>;
 using ConnectedClients = std::unordered_map<std::uint32_t, WebSocket*>;
 
-constexpr auto kClientUpdateInterval = std::chrono::seconds(5);
+constexpr auto kClientUpdateInterval = std::chrono::seconds(5); // You can adjust the delay as needed for testing purposes here. 
 
 std::string dump_message(const nlohmann::json& message) {
     return message.dump();
