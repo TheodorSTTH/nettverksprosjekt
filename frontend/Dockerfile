@@ -6,7 +6,7 @@ COPY shared ./shared
 COPY frontend/public ./frontend/public
 
 RUN mkdir -p frontend/public/wasm \
-    && emcc shared/wasm/rga_wasm_bindings.cpp shared/crdt/RGA.cpp \
+    && emcc shared/wasm/rga_wasm_bindings.cpp shared/crdt/*.cpp \
       -I shared \
       --bind \
       -std=c++17 \

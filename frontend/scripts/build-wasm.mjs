@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { mkdirSync, readdirSync } from 'node:fs'
+import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -8,12 +8,16 @@ const frontendRoot = resolve(__dirname, '..')
 const repoRoot = resolve(frontendRoot, '..')
 const outDir = resolve(frontendRoot, 'public', 'wasm')
 const outFile = resolve(outDir, 'crdt_wasm.js')
+const crdtSources = readdirSync(resolve(repoRoot, 'shared', 'crdt'))
+  .filter((entry) => entry.endsWith('.cpp'))
+  .sort()
+  .map((entry) => resolve(repoRoot, 'shared', 'crdt', entry))
 
 mkdirSync(outDir, { recursive: true })
 
 const emccArgs = [
   resolve(repoRoot, 'shared', 'wasm', 'rga_wasm_bindings.cpp'),
-  resolve(repoRoot, 'shared', 'crdt', 'RGA.cpp'),
+  ...crdtSources,
   '-I',
   resolve(repoRoot, 'shared'),
   '--bind',
@@ -68,7 +72,7 @@ dockerArgs.push(
   'emscripten/emsdk:3.1.74',
   'emcc',
   'shared/wasm/rga_wasm_bindings.cpp',
-  'shared/crdt/RGA.cpp',
+  ...crdtSources.map((source) => `shared/crdt/${basename(source)}`),
   '-I',
   'shared',
   '--bind',
