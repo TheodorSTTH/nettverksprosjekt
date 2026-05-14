@@ -16,6 +16,7 @@ enum class MessageType {
     Insert,
     Delete,
     SyncRequest,
+    SaveRequest,
     RemoteInsert,
     RemoteDelete,
     CursorUpdate,
