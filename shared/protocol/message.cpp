@@ -73,6 +73,8 @@ std::string type_string(MessageType type) {
             return "counter_update";
         case MessageType::CounterState:
             return "counter_state";
+        case MessageType::SetTitle:
+            return "set_title";
         case MessageType::Error:
             return "error";
         case MessageType::Unknown:
@@ -102,6 +104,7 @@ MessageType message_type(const nlohmann::json& message) {
     if (type == "peer_left") return MessageType::PeerLeft;
     if (type == "counter_update") return MessageType::CounterUpdate;
     if (type == "counter_state") return MessageType::CounterState;
+    if (type == "set_title") return MessageType::SetTitle;
     if (type == "error") return MessageType::Error;
     return MessageType::Unknown;
 }
@@ -154,6 +157,33 @@ nlohmann::json serialize_sync_state(const crdt::RGA& document) {
         {"type", "sync_state"},
         {"nodes", nodes},
         {"visible_text", document.to_string()},
+    };
+}
+
+nlohmann::json serialize_sync_state(
+    const crdt::RGA& document,
+    const crdt::LWWRegister<std::string>& title
+) {
+    auto state = serialize_sync_state(document);
+    state["title"] = serialize_title_state(title);
+    return state;
+}
+
+nlohmann::json serialize_title_state(const crdt::LWWRegister<std::string>& title) {
+    const auto meta = title.metadata();
+    return nlohmann::json{
+        {"value", title.value()},
+        {"timestamp", meta.timestamp},
+        {"peer_id", meta.peer_id},
+    };
+}
+
+nlohmann::json serialize_set_title(const crdt::LWWOperation<std::string>& op) {
+    return nlohmann::json{
+        {"type", "set_title"},
+        {"value", op.value},
+        {"timestamp", op.metadata.timestamp},
+        {"peer_id", op.metadata.peer_id},
     };
 }
 
@@ -302,6 +332,23 @@ std::optional<CursorUpdate> parse_cursor_update(const nlohmann::json& message) {
     return CursorUpdate{anchor_id, static_cast<std::uint32_t>(cursor_index)};
 }
 
+std::optional<crdt::LWWOperation<std::string>> parse_set_title(const nlohmann::json& message) {
+    if (!message.is_object() || !message.contains("value") || !message.at("value").is_string()) {
+        return std::nullopt;
+    }
+
+    const auto timestamp = parse_u64_field(message, "timestamp");
+    const auto peer_id = parse_u32_field(message, "peer_id");
+    if (!timestamp || !peer_id) {
+        return std::nullopt;
+    }
+
+    return crdt::LWWOperation<std::string>{
+        message.at("value").get<std::string>(),
+        crdt::LWWMetadata{*timestamp, *peer_id},
+    };
+}
+
 std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message) {
     if (!message.is_object() || !message.contains("counter") || !message.at("counter").is_string()) {
         return std::nullopt;
@@ -330,6 +377,8 @@ ParseResult validate_client_message(const nlohmann::json& message) {
             return parse_cursor_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid cursor update"};
         case MessageType::CounterUpdate:
             return parse_counter_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid counter update"};
+        case MessageType::SetTitle:
+            return parse_set_title(message) ? ParseResult{true, {}} : ParseResult{false, "invalid set_title message"};
         case MessageType::SyncRequest:
             return ParseResult{true, {}};
         default:

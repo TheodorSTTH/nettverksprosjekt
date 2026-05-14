@@ -103,7 +103,7 @@ if(BUILD_TESTS)
 
     enable_testing()
 
-    file(GLOB_RECURSE TEST_SOURCES shared/tests/*.cpp)
+    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS shared/tests/*.cpp)
     if(TEST_SOURCES)
         add_executable(crdt_tests ${TEST_SOURCES} ${SHARED_CORE_SOURCES})
         target_include_directories(crdt_tests PRIVATE shared)

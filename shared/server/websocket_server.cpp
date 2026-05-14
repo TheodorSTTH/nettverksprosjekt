@@ -251,6 +251,33 @@ private:
                     break;
                 }
 
+                case protocol::MessageType::SetTitle: {
+                    const auto op = protocol::parse_set_title(queued.message);
+
+                    if (!op) {
+                        send_to_peer(
+                            queued.sender_peer_id,
+                            dump_message(protocol::serialize_error("invalid set_title message"))
+                        );
+                        continue;
+                    }
+
+                    document_.apply_set_title(*op);
+                    changed = true;
+
+                    // Broadcast the authoritative state to ALL clients (including sender)
+                    // so any client whose write lost the LWW race converges to the winner.
+                    auto state_msg = document_.title_state();
+                    state_msg["type"] = "set_title";
+                    const auto serialized = dump_message(state_msg);
+
+                    for (const auto& [peer_id, client] : clients_) {
+                        client->send(serialized, uWS::OpCode::TEXT);
+                    }
+
+                    break;
+                }
+
                 default:
                     send_to_peer(
                         queued.sender_peer_id,
@@ -350,7 +377,7 @@ void WebSocketServer::run() {
                    },
 
                .message =
-                   [this, &delayed_operations](auto* ws, std::string_view raw_message, uWS::OpCode) {
+                   [this, &delayed_operations, &connected_clients](auto* ws, std::string_view raw_message, uWS::OpCode) {
                        nlohmann::json message;
 
                        try {
@@ -400,6 +427,13 @@ void WebSocketServer::run() {
                                return;
 
                            case protocol::MessageType::CounterUpdate:
+                               delayed_operations.enqueue(
+                                   ws->getUserData()->peer_id,
+                                   message
+                               );
+                               return;
+
+                           case protocol::MessageType::SetTitle:
                                delayed_operations.enqueue(
                                    ws->getUserData()->peer_id,
                                    message

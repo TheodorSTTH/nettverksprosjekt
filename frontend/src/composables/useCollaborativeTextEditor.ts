@@ -10,6 +10,8 @@ import {
   type RgaNode,
 } from '../wasm/crdtEngine'
 
+import { useLWWRegister, type LWWMetadata } from './useLWWRegister'
+
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
 export type TextSelection = {
@@ -48,6 +50,14 @@ type SyncStateMessage = {
   type: 'sync_state'
   nodes: RgaNode[]
   visible_text?: string
+  title?: { value: string; timestamp: number; peer_id: number }
+}
+
+type SetTitleMessage = {
+  type: 'set_title'
+  value: string
+  timestamp: number
+  peer_id: number
 }
 
 type ServerErrorMessage = {
@@ -81,13 +91,20 @@ type ServerMessage =
   | DeleteMessage
   | RemoteCursorMessage
   | PeerLeftMessage
+  | SetTitleMessage
   | CounterStateMessage
   | ServerErrorMessage
 
 const defaultText = ''
+const defaultTitle = 'Untitled'
 const defaultSelection: TextSelection = { start: 0, end: 0 }
 const cursorUpdateDelayMs = 100
 const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+
+// Random fallback peer id used for local LWW writes until the server assigns
+// one via `assign_peer_id`. Once assigned, the LWW register's peer id is
+// updated so subsequent writes use the canonical id.
+const fallbackPeerId = Math.floor(Math.random() * 0xffffffff) + 1
 
 function nowLabel() {
   return new Intl.DateTimeFormat(undefined, {
@@ -192,6 +209,13 @@ export function useCollaborativeTextEditor() {
   const cookieConfirmedOwnCount = ref(0)
   const cookieOwnCount = ref(0)
 
+  // LWW-Register for the document title. Local writes happen only on commit
+  // (blur/Enter from DocumentTitle.vue); remote writes resolve via LWW order.
+  const titleRegister = useLWWRegister<string>(
+    () => peerId.value ?? fallbackPeerId,
+    defaultTitle,
+  )
+
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
   let selectionRestoreRevision = 0
@@ -217,7 +241,7 @@ export function useCollaborativeTextEditor() {
     return Object.entries(remoteCursorAnchors.value)
       .map(([peerId, anchor]) => {
         const numericPeerId = Number(peerId)
-        const cursorIndex = offsetFromGraphemeIndex(editorText.value, resolveCursorIndex(anchor, ids))
+        const cursorIndex = offsetFromGraphemeIndex(editorText.value, resolveCursorIndex(anchor as CursorAnchor, ids))
 
         return {
           peerId: numericPeerId,
@@ -396,7 +420,7 @@ export function useCollaborativeTextEditor() {
   function normalizeRemoteCursorAnchors() {
     const normalizedEntries = Object.entries(remoteCursorAnchors.value).map(([remotePeerId, anchor]) => [
       remotePeerId,
-      normalizeCursorAnchor(anchor),
+      normalizeCursorAnchor(anchor as CursorAnchor),
     ])
 
     remoteCursorAnchors.value = Object.fromEntries(normalizedEntries)
@@ -625,6 +649,24 @@ export function useCollaborativeTextEditor() {
     }
   }
 
+  // Called by DocumentTitle.vue on commit (blur/Enter). Apply locally first so
+  // the UI reflects the change immediately, then broadcast the LWW op. If the
+  // server later returns a winning op with a higher timestamp, apply() will
+  // overwrite ours — the CRDT guarantees both replicas converge.
+  function commitTitle(newTitle: string) {
+    const op = titleRegister.set(newTitle)
+    sendToServer({
+      type: 'set_title',
+      value: op.value,
+      timestamp: op.metadata.timestamp,
+      peer_id: op.metadata.peerId,
+    })
+  }
+
+  function applyRemoteTitle(meta: LWWMetadata, value: string) {
+    titleRegister.apply({ value, metadata: meta })
+  }
+
   function applySyncState(message: SyncStateMessage) {
     if (!engine) {
       return
@@ -639,6 +681,13 @@ export function useCollaborativeTextEditor() {
     hasUnsavedChanges.value = false
     lastSavedAt.value = nowLabel()
     statusMessage.value = 'Updated from server snapshot'
+
+    if (message.title) {
+      applyRemoteTitle(
+        { timestamp: message.title.timestamp, peerId: message.title.peer_id },
+        message.title.value,
+      )
+    }
   }
 
   function applyRemoteInsert(message: InsertMessage) {
@@ -699,7 +748,6 @@ export function useCollaborativeTextEditor() {
 
   function handleServerMessage(event: MessageEvent<string>) {
     let message: ServerMessage
-
     try {
       message = JSON.parse(event.data) as ServerMessage
     } catch {
@@ -732,6 +780,13 @@ export function useCollaborativeTextEditor() {
 
       case 'peer_left':
         removeRemoteCursor(message.peer_id)
+        break
+
+      case 'set_title':
+        applyRemoteTitle(
+          { timestamp: message.timestamp, peerId: message.peer_id },
+          message.value,
+        )
         break
 
       case 'counter_state':
@@ -771,6 +826,7 @@ export function useCollaborativeTextEditor() {
 
     disconnectSocket()
     resetCookieCounterState()
+    titleRegister.reset(defaultTitle)
     socketState.value = 'connecting'
     statusMessage.value = 'Connecting to server'
 
@@ -779,6 +835,7 @@ export function useCollaborativeTextEditor() {
     } catch {
       socketState.value = 'disconnected'
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       statusMessage.value = 'Invalid server URL'
       return
     }
@@ -796,6 +853,7 @@ export function useCollaborativeTextEditor() {
     socket.onerror = () => {
       socketState.value = 'disconnected'
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       statusMessage.value = 'Could not reach server'
     }
 
@@ -805,6 +863,7 @@ export function useCollaborativeTextEditor() {
       socket = null
       remoteCursorAnchors.value = {}
       resetCookieCounterState()
+      titleRegister.reset(defaultTitle)
       lastSentCursorUpdate = ''
     }
   }
@@ -862,6 +921,7 @@ export function useCollaborativeTextEditor() {
   return {
     canRedo,
     canUndo,
+    commitTitle,
     cookieDisplayCount,
     cookieServerCount,
     connectionLabel,
@@ -873,6 +933,7 @@ export function useCollaborativeTextEditor() {
     serverUrl,
     socketState,
     statusMessage,
+    title: titleRegister.value,
     clickCookie,
     connectSocket,
     redoEdit,
