@@ -341,15 +341,80 @@ export function useCollaborativeTextEditor() {
     return { anchorId, cursorIndex }
   }
 
-  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
-    if (anchor.anchorId) {
-      const anchoredIndex = ids.findIndex((id) => sameId(id, anchor.anchorId as RgaId))
-      if (anchoredIndex !== -1) {
-        return anchoredIndex + 1
+  function normalizeCursorAnchor(anchor: CursorAnchor): CursorAnchor {
+    if (!anchor.anchorId || !engine) {
+      return {
+        anchorId: null,
+        cursorIndex: 0,
       }
     }
 
-    return clampCursorIndex(anchor.cursorIndex, ids.length)
+    const nodes = engine.nodesJson()
+    const anchorIndex = nodes.findIndex((node) => sameId(node.id, anchor.anchorId as RgaId))
+
+    if (anchorIndex === -1) {
+      const ids = visibleIds()
+      return {
+        anchorId: anchor.anchorId,
+        cursorIndex: clampCursorIndex(anchor.cursorIndex, ids.length),
+      }
+    }
+
+    if (!nodes[anchorIndex]?.tombstoned) {
+      const visibleIndex = nodes
+        .slice(0, anchorIndex + 1)
+        .filter((node) => !node.tombstoned)
+        .length
+
+      return {
+        anchorId: anchor.anchorId,
+        cursorIndex: visibleIndex,
+      }
+    }
+
+    for (let index = anchorIndex - 1; index >= 0; index -= 1) {
+      const node = nodes[index]
+      if (node && !node.tombstoned) {
+        const visibleIndex = nodes
+          .slice(0, index + 1)
+          .filter((candidate) => !candidate.tombstoned)
+          .length
+
+        return {
+          anchorId: node.id,
+          cursorIndex: visibleIndex,
+        }
+      }
+    }
+
+    return {
+      anchorId: null,
+      cursorIndex: 0,
+    }
+  }
+
+  function normalizeRemoteCursorAnchors() {
+    const normalizedEntries = Object.entries(remoteCursorAnchors.value).map(([remotePeerId, anchor]) => [
+      remotePeerId,
+      normalizeCursorAnchor(anchor),
+    ])
+
+    remoteCursorAnchors.value = Object.fromEntries(normalizedEntries)
+  }
+
+  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
+    const normalized = normalizeCursorAnchor(anchor)
+
+    if (!normalized.anchorId) {
+      return clampCursorIndex(normalized.cursorIndex, ids.length)
+    }
+
+    const anchoredIndex = ids.findIndex((id) => sameId(id, normalized.anchorId as RgaId))
+    if (anchoredIndex !== -1) {
+      return anchoredIndex + 1
+    }
+
+    return clampCursorIndex(normalized.cursorIndex, ids.length)
   }
 
   function captureCursorAnchor() {
@@ -429,10 +494,10 @@ export function useCollaborativeTextEditor() {
 
     remoteCursorAnchors.value = {
       ...remoteCursorAnchors.value,
-      [message.peer_id]: {
+      [message.peer_id]: normalizeCursorAnchor({
         anchorId: message.anchor_id,
         cursorIndex: Math.max(0, message.cursor_index),
-      },
+      }),
     }
   }
 
@@ -499,6 +564,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     statusMessage.value = isConnected.value ? 'Editing with CRDT sync' : 'Editing locally'
     return true
   }
@@ -567,6 +633,7 @@ export function useCollaborativeTextEditor() {
     const cursorAnchor = captureCursorAnchor()
     engine.loadSnapshot(message.nodes)
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     hasUnsavedChanges.value = false
@@ -588,6 +655,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote insert applied'
@@ -607,6 +675,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote delete applied'
