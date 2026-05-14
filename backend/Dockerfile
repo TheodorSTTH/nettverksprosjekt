@@ -1,6 +1,8 @@
+# syntax=docker/dockerfile:1
+
 FROM gcc:14
-COPY . /usr/src/myapp
 WORKDIR /usr/src/myapp
-RUN g++ -std=c++20 main.cpp -o main
-EXPOSE 3030
+COPY main.cpp ./
+COPY --from=shared . ./shared
+RUN g++ -std=c++20 -Ishared main.cpp shared/crdt/GCounter.cpp -o main
 CMD ["./main"]
