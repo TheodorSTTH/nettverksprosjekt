@@ -1,5 +1,6 @@
 name: Docker CI
 
+# Only runs when relevant files change on main/dev
 on:
   push:
     branches: [main, dev]
@@ -9,6 +10,7 @@ on:
       - 'shared/**'
       - 'compose.yaml'
       - 'CMakeLists.txt'
+      - '.github/workflows/**'
   pull_request:
     branches: [main, dev]
     paths:
@@ -17,46 +19,69 @@ on:
       - 'shared/**'
       - 'compose.yaml'
       - 'CMakeLists.txt'
+      - '.github/workflows/**'
 
 jobs:
   docker-build-health:
     runs-on: ubuntu-latest
 
     steps:
+      # Download source code onto the CI machine
       - uses: actions/checkout@v4
 
+      # Enable extended Docker build engine
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Build backend image. Context is repo root because Dockerfile
+      # needs access to shared/ and CMakeLists.txt.
+      # cache-from/cache-to reuses layers from previous runs
       - name: Build backend image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: backend/Dockerfile
           push: false
+          load: true
           tags: crdt-backend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
+      # Build frontend image. Also needs repo root context because of shared/wasm/
       - name: Build frontend image
         uses: docker/build-push-action@v5
         with:
-          context: frontend
+          context: .
           file: frontend/Dockerfile
           push: false
+          load: true
           tags: crdt-frontend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
+      # Confirm wasm files were actually produced during the build, 
+      # sinceThe wasm step can exit without error but still produce no output files
+      - name: Verify WASM artifact was emitted
+        run: |
+          docker run --rm --entrypoint sh crdt-frontend:ci -c '
+            set -e
+            ls -lh dist/wasm/
+            test -f dist/wasm/crdt_rga.js   || { echo "missing dist/wasm/crdt_rga.js";   exit 1; }
+            test -f dist/wasm/crdt_rga.wasm || { echo "missing dist/wasm/crdt_rga.wasm"; exit 1; }
+          '
+
+      # Start all containers in the background
       - name: Start containers
         run: docker compose up -d
 
+      # Give containers time to bind their ports before probing them
       - name: Wait for containers to be ready
         run: |
           echo "Waiting for containers..."
           sleep 5
           docker compose ps
 
+      # Check that no container crashed on startup
       - name: Check all containers are running
         run: |
           if docker compose ps | grep -E "Exit|exited|unhealthy"; then
@@ -66,10 +91,34 @@ jobs:
           fi
           echo "All containers running"
 
+      # Confirm both services respond correctly, where frontend must return HTTP 200 on port 8080.
+      # Backend must return HTTP 101 on WebSocket handshake against /ws
+      - name: Smoke-test endpoints
+        run: |
+          set -e
+          echo "Probing frontend (http://localhost:8080)..."
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-connrefused \
+               -o /dev/null http://localhost:8080/
+
+          echo "Probing backend WebSocket handshake (ws://localhost:3030/ws)..."
+          status=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+                       --header "Connection: Upgrade" \
+                       --header "Upgrade: websocket" \
+                       --header "Sec-WebSocket-Version: 13" \
+                       --header "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                       http://localhost:3030/ws || true)
+          if [ "$status" != "101" ]; then
+            echo "Expected HTTP 101 from backend WS handshake, got $status"
+            exit 1
+          fi
+          echo "Both endpoints healthy."
+
+      # Dump container logs if anything above failed
       - name: Show logs on failure
         if: failure()
         run: docker compose logs
 
+      # Clean up regardless of outcome
       - name: Tear down
         if: always()
         run: docker compose down
