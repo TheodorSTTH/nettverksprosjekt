@@ -1,22 +1,32 @@
-FROM node:lts-alpine
+FROM emscripten/emsdk:3.1.74 AS wasm
 
-# install simple http server for serving static content
-RUN npm install -g http-server
+WORKDIR /src
 
-# make the 'app' folder the current working directory
+COPY shared ./shared
+COPY frontend/scripts ./frontend/scripts
+COPY frontend/public ./frontend/public
+
+RUN node frontend/scripts/build-wasm.mjs
+
+FROM node:lts-alpine AS build
+
 WORKDIR /app
 
-# copy both 'package.json' and 'package-lock.json' (if available)
-COPY package*.json ./
+COPY frontend/package*.json ./
+RUN npm ci
 
-# install project dependencies
-RUN npm install
+COPY frontend ./
+COPY --from=wasm /src/frontend/public/wasm ./public/wasm
 
-# copy project files and folders to the current working directory (i.e. 'app' folder)
-COPY . .
+RUN npm run type-check \
+    && npm run build-only
 
-# build app for production with minification
-RUN npm run build
+FROM node:lts-alpine AS runtime
+
+RUN npm install -g http-server
+
+WORKDIR /app
+COPY --from=build /app/dist ./dist
 
 EXPOSE 8080
-CMD [ "http-server", "dist" ]
+CMD ["http-server", "dist", "-p", "8080", "-a", "0.0.0.0", "-c-1"]

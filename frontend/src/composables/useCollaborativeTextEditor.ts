@@ -1,55 +1,192 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  createCrdtEngine,
+  isErrorMessage,
+  rootId,
+  type CrdtEngine,
+  type DeleteMessage,
+  type InsertMessage,
+  type RgaId,
+  type RgaNode,
+} from '../wasm/crdtEngine'
 
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
-type ServerMessage = {
-  type?: string
-  content?: string
+export type TextSelection = {
+  start: number
+  end: number
 }
 
-const DEFAULT_DOCUMENT_PATH = '/shared.txt'
-const SYNC_INTERVAL_MS = 3000
+export type SelectionRestore = TextSelection & {
+  revision: number
+}
 
-const defaultText = [
-  'Start writing your shared text file here.',
-  '',
-  'This editor is plain text only for now. Formatting, CRDT merging, and rich text features will be handled later by the backend and future editor work.',
-].join('\n')
+export type RemoteEditorCursor = {
+  peerId: number
+  label: string
+  color: string
+  cursorIndex: number
+}
+
+type CursorAnchor = {
+  anchorId: RgaId | null
+  cursorIndex: number
+}
+
+type AssignPeerMessage = {
+  type: 'assign_peer_id'
+  peer_id: number
+}
+
+type SyncStateMessage = {
+  type: 'sync_state'
+  nodes: RgaNode[]
+  visible_text?: string
+}
+
+type ServerErrorMessage = {
+  type: 'error'
+  message?: string
+}
+
+type RemoteCursorMessage = {
+  type: 'remote_cursor'
+  peer_id: number
+  anchor_id: RgaId | null
+  cursor_index: number
+}
+
+type PeerLeftMessage = {
+  type: 'peer_left'
+  peer_id: number
+}
+
+type CounterStateMessage = {
+  type: 'counter_state'
+  counter: 'cookies'
+  value: number
+  own_count: number
+}
+
+type ServerMessage =
+  | AssignPeerMessage
+  | SyncStateMessage
+  | InsertMessage
+  | DeleteMessage
+  | RemoteCursorMessage
+  | PeerLeftMessage
+  | CounterStateMessage
+  | ServerErrorMessage
+
+const defaultText = ''
+const defaultSelection: TextSelection = { start: 0, end: 0 }
+const cursorUpdateDelayMs = 100
+const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+
+function nowLabel() {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date())
+}
+
+function commonPrefixLength(left: string, right: string) {
+  const max = Math.min(left.length, right.length)
+  let index = 0
+
+  while (index < max && left[index] === right[index]) {
+    index += 1
+  }
+
+  return index
+}
+
+function commonSuffixLength(left: string, right: string, prefixLength: number) {
+  const max = Math.min(left.length - prefixLength, right.length - prefixLength)
+  let count = 0
+
+  while (
+    count < max &&
+    left[left.length - 1 - count] === right[right.length - 1 - count]
+  ) {
+    count += 1
+  }
+
+  return count
+}
 
 export function useCollaborativeTextEditor() {
   const editorText = ref(defaultText)
-  const serverUrl = ref('ws://localhost:8080/ws')
+  const serverUrl = ref('ws://localhost:3030/ws')
   const socketState = ref<SocketState>('disconnected')
-  const statusMessage = ref('Disconnected')
+  const statusMessage = ref('Loading CRDT WebAssembly')
   const hasUnsavedChanges = ref(false)
   const lastSavedAt = ref<string | null>(null)
+  const peerId = ref<number | null>(null)
+  const wasmReady = ref(false)
+  const currentSelection = ref<TextSelection>(defaultSelection)
+  const selectionRestore = ref<SelectionRestore | null>(null)
+  const remoteCursorAnchors = ref<Record<number, CursorAnchor>>({})
+  const cookieServerCount = ref(0)
+  const cookieConfirmedOwnCount = ref(0)
+  const cookieOwnCount = ref(0)
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
+  let selectionRestoreRevision = 0
+  let cursorUpdateTimer: ReturnType<typeof setTimeout> | null = null
+  let lastSentCursorUpdate = ''
 
   let socket: WebSocket | null = null
-  let syncTimer: number | undefined
+  let engine: CrdtEngine | null = null
   let isApplyingHistory = false
+  let isDestroyed = false
 
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
   const isConnected = computed(() => socketState.value === 'connected')
+  const cookieDisplayCount = computed(() => (
+    cookieServerCount.value - cookieConfirmedOwnCount.value + cookieOwnCount.value
+  ))
+  const remoteCursors = computed<RemoteEditorCursor[]>(() => {
+    // Track editor text so this recomputes whenever CRDT visible order changes.
+    editorText.value
+    const ids = visibleIds()
+
+    return Object.entries(remoteCursorAnchors.value)
+      .map(([peerId, anchor]) => {
+        const numericPeerId = Number(peerId)
+        const cursorIndex = resolveCursorIndex(anchor, ids)
+
+        return {
+          peerId: numericPeerId,
+          label: `Peer ${numericPeerId}`,
+          color: peerColor(numericPeerId),
+          cursorIndex,
+        }
+      })
+      .sort((left, right) => left.peerId - right.peerId)
+  })
 
   const saveLabel = computed(() => {
+    if (!wasmReady.value) {
+      return 'CRDT loading'
+    }
+
     if (hasUnsavedChanges.value) {
-      return 'Unsaved changes'
+      return 'Local change pending'
     }
 
     if (lastSavedAt.value) {
-      return `Saved ${lastSavedAt.value}`
+      return `Synced ${lastSavedAt.value}`
     }
 
-    return 'Saved locally'
+    return 'Synced automatically'
   })
 
   const connectionLabel = computed(() => {
     if (socketState.value === 'connected') {
-      return 'Connected'
+      return peerId.value === null ? 'Connected' : `Connected as ${peerId.value}`
     }
 
     if (socketState.value === 'connecting') {
@@ -58,13 +195,6 @@ export function useCollaborativeTextEditor() {
 
     return 'Disconnected'
   })
-
-  function nowLabel() {
-    return new Intl.DateTimeFormat(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date())
-  }
 
   function recordHistory(value: string) {
     if (isApplyingHistory) {
@@ -81,11 +211,250 @@ export function useCollaborativeTextEditor() {
     historyIndex.value = history.value.length - 1
   }
 
+  function sendToServer(payload: Record<string, unknown>) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      hasUnsavedChanges.value = true
+      statusMessage.value = 'Editing locally; reconnect to sync'
+      return false
+    }
+
+    socket.send(JSON.stringify(payload))
+    lastSavedAt.value = nowLabel()
+    hasUnsavedChanges.value = false
+    return true
+  }
+
+  function requestFullSync() {
+    sendToServer({ type: 'sync_request' })
+  }
+
+  function saveDocument() {
+    requestFullSync()
+    statusMessage.value = isConnected.value ? 'Requested latest server state' : 'Reconnect to sync'
+  }
+
+  async function initializeEngine() {
+    if (engine) {
+      return true
+    }
+
+    try {
+      engine = await createCrdtEngine()
+      wasmReady.value = true
+      statusMessage.value = 'CRDT ready'
+      return true
+    } catch (error) {
+      wasmReady.value = false
+      statusMessage.value =
+        error instanceof Error
+          ? `CRDT WebAssembly unavailable: ${error.message}`
+          : 'CRDT WebAssembly unavailable'
+      return false
+    }
+  }
+
+  function visibleIds(): RgaId[] {
+    return engine?.visibleIds() ?? []
+  }
+
+  function sameId(left: RgaId, right: RgaId) {
+    return left.peer_id === right.peer_id && left.sequence === right.sequence
+  }
+
+  function clampCursorIndex(index: number, max: number) {
+    return Math.max(0, Math.min(index, max))
+  }
+
+  function peerColor(remotePeerId: number) {
+    return peerColors[remotePeerId % peerColors.length] ?? '#2563eb'
+  }
+
+  function cursorAnchorFromSelection(selection = currentSelection.value): CursorAnchor {
+    const ids = visibleIds()
+    const cursorIndex = clampCursorIndex(selection.start, ids.length)
+    const anchorId = cursorIndex === 0 ? null : ids[cursorIndex - 1] ?? null
+
+    return { anchorId, cursorIndex }
+  }
+
+  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
+    if (anchor.anchorId) {
+      const anchoredIndex = ids.findIndex((id) => sameId(id, anchor.anchorId as RgaId))
+      if (anchoredIndex !== -1) {
+        return anchoredIndex + 1
+      }
+    }
+
+    return clampCursorIndex(anchor.cursorIndex, ids.length)
+  }
+
+  function captureCursorAnchor() {
+    const ids = visibleIds()
+    const cursorIndex = clampCursorIndex(currentSelection.value.start, ids.length)
+
+    return {
+      fallbackIds: ids.slice(0, cursorIndex).reverse(),
+    }
+  }
+
+  function restoreCursorFromAnchor(anchor: { fallbackIds: RgaId[] }) {
+    const ids = visibleIds()
+    let cursorIndex = 0
+
+    for (const fallbackId of anchor.fallbackIds) {
+      const index = ids.findIndex((id) => sameId(id, fallbackId))
+      if (index !== -1) {
+        cursorIndex = index + 1
+        break
+      }
+    }
+
+    const selection = { start: cursorIndex, end: cursorIndex }
+    currentSelection.value = selection
+    selectionRestore.value = {
+      ...selection,
+      revision: ++selectionRestoreRevision,
+    }
+  }
+
+  function updateSelection(selection: TextSelection) {
+    currentSelection.value = {
+      start: Math.max(0, selection.start),
+      end: Math.max(0, selection.end),
+    }
+    scheduleCursorUpdate()
+  }
+
+  function sendCursorUpdateNow() {
+    cursorUpdateTimer = null
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    const anchor = cursorAnchorFromSelection()
+    const payload = {
+      type: 'cursor_update',
+      anchor_id: anchor.anchorId,
+      cursor_index: anchor.cursorIndex,
+    }
+    const serialized = JSON.stringify(payload)
+    if (serialized === lastSentCursorUpdate) {
+      return
+    }
+
+    socket.send(serialized)
+    lastSentCursorUpdate = serialized
+  }
+
+  function scheduleCursorUpdate() {
+    if (cursorUpdateTimer) {
+      return
+    }
+
+    cursorUpdateTimer = window.setTimeout(sendCursorUpdateNow, cursorUpdateDelayMs)
+  }
+
+  function applyRemoteCursor(message: RemoteCursorMessage) {
+    if (message.peer_id === peerId.value) {
+      return
+    }
+
+    remoteCursorAnchors.value = {
+      ...remoteCursorAnchors.value,
+      [message.peer_id]: {
+        anchorId: message.anchor_id,
+        cursorIndex: Math.max(0, message.cursor_index),
+      },
+    }
+  }
+
+  function removeRemoteCursor(peerIdToRemove: number) {
+    const next = { ...remoteCursorAnchors.value }
+    delete next[peerIdToRemove]
+    remoteCursorAnchors.value = next
+  }
+
+  function applyLocalTextChange(nextText: string) {
+    if (!engine) {
+      statusMessage.value = 'CRDT WebAssembly is not ready'
+      return false
+    }
+
+    const previousText = engine.toString()
+    if (previousText === nextText) {
+      return true
+    }
+
+    const idsBeforeChange = visibleIds()
+    const prefixLength = commonPrefixLength(previousText, nextText)
+    const suffixLength = commonSuffixLength(previousText, nextText, prefixLength)
+    const deleteCount = previousText.length - prefixLength - suffixLength
+    const insertText = nextText.slice(prefixLength, nextText.length - suffixLength)
+
+    if (prefixLength + deleteCount > idsBeforeChange.length) {
+      requestFullSync()
+      statusMessage.value = 'Local edit could not be mapped; requested full sync'
+      return false
+    }
+
+    const deletedIds = idsBeforeChange.slice(prefixLength, prefixLength + deleteCount).reverse()
+    for (const id of deletedIds) {
+      const operation = engine.localDelete(id)
+      if (isErrorMessage(operation)) {
+        requestFullSync()
+        statusMessage.value = operation.message
+        return false
+      }
+
+      sendToServer(operation)
+    }
+
+    let parentId = prefixLength === 0 ? rootId() : idsBeforeChange[prefixLength - 1]
+    if (!parentId) {
+      requestFullSync()
+      statusMessage.value = 'Local edit parent was missing; requested full sync'
+      return false
+    }
+
+    for (let index = 0; index < insertText.length; index += 1) {
+      const operation = engine.localInsert(insertText[index] ?? '', parentId)
+      if (isErrorMessage(operation)) {
+        requestFullSync()
+        statusMessage.value = operation.message
+        return false
+      }
+
+      sendToServer(operation)
+      parentId = operation.id
+    }
+
+    editorText.value = engine.toString()
+    statusMessage.value = isConnected.value ? 'Editing with CRDT sync' : 'Editing locally'
+    return true
+  }
+
   function updateText(value: string) {
-    editorText.value = value
-    hasUnsavedChanges.value = true
-    statusMessage.value = 'Editing locally'
-    recordHistory(value)
+    const applied = applyLocalTextChange(value)
+    if (!applied) {
+      return
+    }
+
+    recordHistory(editorText.value)
+  }
+
+  function clickCookie() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      statusMessage.value = 'Reconnect to count cookies'
+      return
+    }
+
+    const nextCount = cookieOwnCount.value + 1
+    cookieOwnCount.value = nextCount
+    sendToServer({
+      type: 'counter_update',
+      counter: 'cookies',
+      count: nextCount,
+    })
   }
 
   function undoEdit() {
@@ -95,10 +464,13 @@ export function useCollaborativeTextEditor() {
 
     isApplyingHistory = true
     historyIndex.value -= 1
-    editorText.value = history.value[historyIndex.value] ?? editorText.value
+    const targetText = history.value[historyIndex.value] ?? editorText.value
+    const applied = applyLocalTextChange(targetText)
     isApplyingHistory = false
-    hasUnsavedChanges.value = true
-    statusMessage.value = 'Undo applied'
+
+    if (applied) {
+      statusMessage.value = 'Undo applied'
+    }
   }
 
   function redoEdit() {
@@ -108,62 +480,133 @@ export function useCollaborativeTextEditor() {
 
     isApplyingHistory = true
     historyIndex.value += 1
-    editorText.value = history.value[historyIndex.value] ?? editorText.value
+    const targetText = history.value[historyIndex.value] ?? editorText.value
+    const applied = applyLocalTextChange(targetText)
     isApplyingHistory = false
-    hasUnsavedChanges.value = true
-    statusMessage.value = 'Redo applied'
-  }
 
-  function sendToServer(payload: Record<string, unknown>) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return false
+    if (applied) {
+      statusMessage.value = 'Redo applied'
     }
-
-    socket.send(JSON.stringify(payload))
-    return true
   }
 
-  function requestLatestText() {
-    sendToServer({
-      type: 'text:request',
-      documentPath: DEFAULT_DOCUMENT_PATH,
-    })
-  }
-
-  function saveDocument() {
-    const sent = sendToServer({
-      type: 'text:update',
-      documentPath: DEFAULT_DOCUMENT_PATH,
-      content: editorText.value,
-    })
-
-    hasUnsavedChanges.value = false
-    lastSavedAt.value = nowLabel()
-    statusMessage.value = sent ? 'Saved to server' : 'Saved locally'
-  }
-
-  function applyServerSnapshot(content: string) {
-    if (content === editorText.value) {
-      hasUnsavedChanges.value = false
-      statusMessage.value = 'Already up to date'
+  function applySyncState(message: SyncStateMessage) {
+    if (!engine) {
       return
     }
 
-    editorText.value = content
-    recordHistory(content)
+    const cursorAnchor = captureCursorAnchor()
+    engine.loadSnapshot(message.nodes)
+    editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
+    recordHistory(editorText.value)
     hasUnsavedChanges.value = false
-    statusMessage.value = 'Updated from server'
+    lastSavedAt.value = nowLabel()
+    statusMessage.value = 'Updated from server snapshot'
+  }
+
+  function applyRemoteInsert(message: InsertMessage) {
+    if (!engine) {
+      return
+    }
+
+    const cursorAnchor = captureCursorAnchor()
+    const applied = engine.applyRemoteInsert(message)
+    if (!applied) {
+      requestFullSync()
+      statusMessage.value = 'Remote insert referenced missing state; requested full sync'
+      return
+    }
+
+    editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
+    recordHistory(editorText.value)
+    statusMessage.value = 'Remote insert applied'
+  }
+
+  function applyRemoteDelete(message: DeleteMessage) {
+    if (!engine) {
+      return
+    }
+
+    const cursorAnchor = captureCursorAnchor()
+    const applied = engine.applyRemoteDelete(message)
+    if (!applied) {
+      requestFullSync()
+      statusMessage.value = 'Remote delete referenced missing state; requested full sync'
+      return
+    }
+
+    editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
+    recordHistory(editorText.value)
+    statusMessage.value = 'Remote delete applied'
+  }
+
+  function applyCounterState(message: CounterStateMessage) {
+    if (message.counter !== 'cookies') {
+      return
+    }
+
+    cookieServerCount.value = Math.max(0, message.value)
+    cookieConfirmedOwnCount.value = Math.max(0, message.own_count)
+    cookieOwnCount.value = Math.max(cookieOwnCount.value, cookieConfirmedOwnCount.value)
+  }
+
+  function resetCookieCounterState() {
+    cookieServerCount.value = 0
+    cookieConfirmedOwnCount.value = 0
+    cookieOwnCount.value = 0
   }
 
   function handleServerMessage(event: MessageEvent<string>) {
-    try {
-      const message = JSON.parse(event.data) as ServerMessage
+    let message: ServerMessage
 
-      if (message.type === 'text:snapshot' && typeof message.content === 'string') {
-        applyServerSnapshot(message.content)
-      }
+    try {
+      message = JSON.parse(event.data) as ServerMessage
     } catch {
-      statusMessage.value = 'Ignored unsupported server message'
+      statusMessage.value = 'Ignored invalid server JSON'
+      return
+    }
+
+    switch (message.type) {
+      case 'assign_peer_id':
+        peerId.value = message.peer_id
+        engine?.setPeerId(message.peer_id)
+        statusMessage.value = `Assigned peer ${message.peer_id}`
+        break
+
+      case 'sync_state':
+        applySyncState(message)
+        break
+
+      case 'remote_insert':
+        applyRemoteInsert(message)
+        break
+
+      case 'remote_delete':
+        applyRemoteDelete(message)
+        break
+
+      case 'remote_cursor':
+        applyRemoteCursor(message)
+        break
+
+      case 'peer_left':
+        removeRemoteCursor(message.peer_id)
+        break
+
+      case 'counter_state':
+        applyCounterState(message)
+        break
+
+      case 'error':
+        statusMessage.value = message.message ?? 'Server reported an error'
+        requestFullSync()
+        break
+
+      default:
+        statusMessage.value = 'Ignored unsupported server message'
+        break
     }
   }
 
@@ -180,8 +623,15 @@ export function useCollaborativeTextEditor() {
     socket = null
   }
 
-  function connectSocket() {
+  async function connectSocket() {
+    const ready = await initializeEngine()
+    if (!ready) {
+      socketState.value = 'disconnected'
+      return
+    }
+
     disconnectSocket()
+    resetCookieCounterState()
     socketState.value = 'connecting'
     statusMessage.value = 'Connecting to server'
 
@@ -189,6 +639,7 @@ export function useCollaborativeTextEditor() {
       socket = new WebSocket(serverUrl.value)
     } catch {
       socketState.value = 'disconnected'
+      resetCookieCounterState()
       statusMessage.value = 'Invalid server URL'
       return
     }
@@ -196,17 +647,16 @@ export function useCollaborativeTextEditor() {
     socket.onopen = () => {
       socketState.value = 'connected'
       statusMessage.value = 'Connected to server'
-      sendToServer({
-        type: 'join',
-        documentPath: DEFAULT_DOCUMENT_PATH,
-      })
-      requestLatestText()
+      lastSentCursorUpdate = ''
+      requestFullSync()
+      scheduleCursorUpdate()
     }
 
     socket.onmessage = handleServerMessage
 
     socket.onerror = () => {
       socketState.value = 'disconnected'
+      resetCookieCounterState()
       statusMessage.value = 'Could not reach server'
     }
 
@@ -214,19 +664,10 @@ export function useCollaborativeTextEditor() {
       socketState.value = 'disconnected'
       statusMessage.value = 'Disconnected'
       socket = null
+      remoteCursorAnchors.value = {}
+      resetCookieCounterState()
+      lastSentCursorUpdate = ''
     }
-  }
-
-  function syncWithServer() {
-    if (!isConnected.value) {
-      return
-    }
-
-    if (hasUnsavedChanges.value) {
-      saveDocument()
-    }
-
-    requestLatestText()
   }
 
   function handleShortcut(event: KeyboardEvent) {
@@ -256,35 +697,48 @@ export function useCollaborativeTextEditor() {
     undoEdit()
   }
 
-  onMounted(() => {
-    connectSocket()
+  onMounted(async () => {
+    await connectSocket()
+
+    if (isDestroyed) {
+      disconnectSocket()
+      return
+    }
+
     window.addEventListener('keydown', handleShortcut)
-    syncTimer = window.setInterval(syncWithServer, SYNC_INTERVAL_MS)
   })
 
   onBeforeUnmount(() => {
+    isDestroyed = true
     window.removeEventListener('keydown', handleShortcut)
-
-    if (syncTimer) {
-      window.clearInterval(syncTimer)
+    if (cursorUpdateTimer) {
+      window.clearTimeout(cursorUpdateTimer)
+      cursorUpdateTimer = null
     }
-
     disconnectSocket()
+    engine?.destroy()
+    engine = null
   })
 
   return {
     canRedo,
     canUndo,
+    cookieDisplayCount,
+    cookieServerCount,
     connectionLabel,
     editorText,
+    remoteCursors,
     saveDocument,
     saveLabel,
+    selectionRestore,
     serverUrl,
     socketState,
     statusMessage,
+    clickCookie,
     connectSocket,
     redoEdit,
     undoEdit,
+    updateSelection,
     updateText,
   }
 }

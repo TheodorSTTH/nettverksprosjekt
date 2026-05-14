@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <nlohmann/json.hpp>
+#include <optional>
 
 #include "protocol/message.hpp"
 
@@ -43,6 +44,70 @@ TEST_CASE("Insert and delete operations round-trip", "[protocol]") {
     REQUIRE(parsed_delete->target_id == delete_op.target_id);
 }
 
+TEST_CASE("Cursor presence messages round-trip", "[protocol]") {
+    const protocol::CursorUpdate cursor{RGAID{1, 2}, 4};
+
+    const auto parsed_cursor = protocol::parse_cursor_update(protocol::serialize_cursor_update(cursor));
+    REQUIRE(parsed_cursor.has_value());
+    REQUIRE(parsed_cursor->anchor_id.has_value());
+    REQUIRE(*parsed_cursor->anchor_id == *cursor.anchor_id);
+    REQUIRE(parsed_cursor->cursor_index == cursor.cursor_index);
+
+    const auto remote_cursor = protocol::serialize_remote_cursor(9, cursor);
+    REQUIRE(remote_cursor.at("type") == "remote_cursor");
+    REQUIRE(remote_cursor.at("peer_id") == 9);
+    REQUIRE(remote_cursor.at("cursor_index") == 4);
+
+    const protocol::CursorUpdate document_start{std::nullopt, 0};
+    const auto parsed_start = protocol::parse_cursor_update(protocol::serialize_cursor_update(document_start));
+    REQUIRE(parsed_start.has_value());
+    REQUIRE_FALSE(parsed_start->anchor_id.has_value());
+    REQUIRE(parsed_start->cursor_index == 0);
+
+    const auto browser_message = nlohmann::json::parse(
+        R"({"type":"cursor_update","anchor_id":null,"cursor_index":0})"
+    );
+    const auto parsed_browser_cursor = protocol::parse_cursor_update(browser_message);
+    REQUIRE(parsed_browser_cursor.has_value());
+    REQUIRE(parsed_browser_cursor->cursor_index == 0);
+
+    const auto browser_anchor_message = nlohmann::json::parse(
+        R"({"type":"cursor_update","anchor_id":{"peer_id":1,"sequence":2},"cursor_index":4})"
+    );
+    const auto parsed_browser_anchor = protocol::parse_cursor_update(browser_anchor_message);
+    REQUIRE(parsed_browser_anchor.has_value());
+    REQUIRE(parsed_browser_anchor->anchor_id.has_value());
+    REQUIRE(*parsed_browser_anchor->anchor_id == RGAID{1, 2});
+    REQUIRE(parsed_browser_anchor->cursor_index == 4);
+}
+
+TEST_CASE("Peer left message includes peer id", "[protocol]") {
+    const auto message = protocol::serialize_peer_left(7);
+
+    REQUIRE(message.at("type") == "peer_left");
+    REQUIRE(message.at("peer_id") == 7);
+}
+
+TEST_CASE("Counter messages validate and serialize", "[protocol]") {
+    const auto update = nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "cookies"},
+        {"count", 12},
+    };
+    const auto parsed = protocol::parse_counter_update(update);
+
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->counter == "cookies");
+    REQUIRE(parsed->count == 12);
+    REQUIRE(protocol::validate_client_message(update).ok);
+
+    const auto state = protocol::serialize_counter_state("cookies", 42, 12);
+    REQUIRE(state.at("type") == "counter_state");
+    REQUIRE(state.at("counter") == "cookies");
+    REQUIRE(state.at("value") == 42);
+    REQUIRE(state.at("own_count") == 12);
+}
+
 TEST_CASE("Malformed client messages are rejected", "[protocol]") {
     const auto missing_parent = nlohmann::json{
         {"type", "insert"},
@@ -54,6 +119,35 @@ TEST_CASE("Malformed client messages are rejected", "[protocol]") {
 
     REQUIRE_FALSE(protocol::validate_client_message(missing_parent).ok);
     REQUIRE_FALSE(protocol::validate_client_message(unknown).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "cursor_update"},
+        {"anchor_id", protocol::serialize_id(RGAID{1, 1})},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "cursor_update"},
+        {"anchor_id", nullptr},
+        {"cursor_index", -1},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "cookies"},
+        {"count", -1},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "other"},
+        {"count", 1},
+    }).ok);
+
+    REQUIRE(protocol::validate_client_message(nlohmann::json{
+        {"type", "cursor_update"},
+        {"anchor_id", nullptr},
+        {"cursor_index", std::uint32_t{0}},
+    }).ok);
 }
 
 TEST_CASE("Sync state contains all nodes and tombstones", "[protocol]") {

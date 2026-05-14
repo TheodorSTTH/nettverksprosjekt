@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CookieClickerPanel from '../components/CookieClickerPanel.vue'
 import EditorToolbar from '../components/EditorToolbar.vue'
 import PlainTextEditor from '../components/PlainTextEditor.vue'
 import ServerSettings from '../components/ServerSettings.vue'
@@ -9,30 +10,44 @@ const editor = useCollaborativeTextEditor()
 
 <template>
   <main class="app-shell">
-    <section class="editor-card" aria-label="Plain text editor">
-      <EditorToolbar
-        :can-redo="editor.canRedo.value"
-        :can-undo="editor.canUndo.value"
-        :connection-label="editor.connectionLabel.value"
-        :socket-state="editor.socketState.value"
-        @reconnect="editor.connectSocket"
-        @redo="editor.redoEdit"
-        @save="editor.saveDocument"
-        @undo="editor.undoEdit"
-      />
+    <div class="app-layout">
+      <section class="editor-card" aria-label="Plain text editor">
+        <EditorToolbar
+          :can-redo="editor.canRedo.value"
+          :can-undo="editor.canUndo.value"
+          :connection-label="editor.connectionLabel.value"
+          :socket-state="editor.socketState.value"
+          @reconnect="editor.connectSocket"
+          @redo="editor.redoEdit"
+          @save="editor.saveDocument"
+          @undo="editor.undoEdit"
+        />
 
-      <ServerSettings v-model:server-url="editor.serverUrl.value" @reconnect="editor.connectSocket" />
+        <ServerSettings v-model:server-url="editor.serverUrl.value" @reconnect="editor.connectSocket" />
 
-      <div class="editor-meta">
-        <div>
-          <h1>Shared text file</h1>
-          <p>{{ editor.statusMessage.value }}</p>
+        <div class="editor-meta">
+          <div>
+            <h1>Shared text file</h1>
+            <p>{{ editor.statusMessage.value }}</p>
+          </div>
+          <span class="save-state">{{ editor.saveLabel.value }}</span>
         </div>
-        <span class="save-state">{{ editor.saveLabel.value }}</span>
-      </div>
 
-      <PlainTextEditor :model-value="editor.editorText.value" @update:model-value="editor.updateText" />
-    </section>
+        <PlainTextEditor
+          :model-value="editor.editorText.value"
+          :remote-cursors="editor.remoteCursors.value"
+          :selection-restore="editor.selectionRestore.value"
+          @selection-change="editor.updateSelection"
+          @update:model-value="editor.updateText"
+        />
+      </section>
+
+      <CookieClickerPanel
+        :disabled="editor.socketState.value !== 'connected'"
+        :total="editor.cookieDisplayCount.value"
+        @click="editor.clickCookie"
+      />
+    </div>
   </main>
 </template>
 
@@ -45,10 +60,16 @@ const editor = useCollaborativeTextEditor()
     #f3f4f6;
 }
 
+.app-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 920px) minmax(240px, 300px);
+  align-items: stretch;
+  justify-content: center;
+  gap: 14px;
+}
+
 .editor-card {
-  width: min(100%, 920px);
   min-height: calc(100vh - 72px);
-  margin: 0 auto;
   overflow: hidden;
   background: #ffffff;
   border: 1px solid #e0e4ea;
@@ -83,6 +104,12 @@ const editor = useCollaborativeTextEditor()
   color: #596373;
   font-size: 0.9rem;
   white-space: nowrap;
+}
+
+@media (max-width: 1120px) {
+  .app-layout {
+    grid-template-columns: minmax(0, 920px);
+  }
 }
 
 @media (max-width: 760px) {
