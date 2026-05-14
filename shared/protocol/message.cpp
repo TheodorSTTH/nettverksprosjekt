@@ -116,7 +116,7 @@ nlohmann::json serialize_id(const crdt::RGAID& id) {
 
 nlohmann::json serialize_node(const crdt::RGANode& node) {
     return nlohmann::json{
-        {"value", std::string(1, node.value)},
+        {"value", node.value},
         {"id", serialize_id(node.id)},
         {"parent_id", serialize_id(node.parent_id)},
         {"tombstoned", node.tombstoned},
@@ -126,8 +126,8 @@ nlohmann::json serialize_node(const crdt::RGANode& node) {
 nlohmann::json serialize_insert(const crdt::InsertOp& op, MessageType type) {
     return nlohmann::json{
         {"type", type_string(type)},
-        {"value", std::string(1, op.value)},
-        {"char", std::string(1, op.value)},
+        {"value", op.value},
+        {"char", op.value},
         {"id", serialize_id(op.id)},
         {"parent_id", serialize_id(op.parent_id)},
     };
@@ -215,7 +215,7 @@ std::optional<crdt::RGANode> parse_node(const nlohmann::json& value) {
     }
 
     const auto text = value.at("value").get<std::string>();
-    if (text.size() != 1) {
+    if (text.empty()) {
         return std::nullopt;
     }
 
@@ -225,7 +225,7 @@ std::optional<crdt::RGANode> parse_node(const nlohmann::json& value) {
         return std::nullopt;
     }
 
-    return crdt::RGANode{text[0], *id, *parent_id, value.at("tombstoned").get<bool>()};
+    return crdt::RGANode{text, *id, *parent_id, value.at("tombstoned").get<bool>()};
 }
 
 std::optional<crdt::InsertOp> parse_insert(const nlohmann::json& message) {
@@ -244,7 +244,7 @@ std::optional<crdt::InsertOp> parse_insert(const nlohmann::json& message) {
     }
 
     const auto text = message.at(value_key).get<std::string>();
-    if (text.size() != 1) {
+    if (text.empty()) {
         return std::nullopt;
     }
 
@@ -254,7 +254,7 @@ std::optional<crdt::InsertOp> parse_insert(const nlohmann::json& message) {
         return std::nullopt;
     }
 
-    return crdt::InsertOp{text[0], *id, *parent_id};
+    return crdt::InsertOp{text, *id, *parent_id};
 }
 
 std::optional<crdt::DeleteOp> parse_delete(const nlohmann::json& message) {

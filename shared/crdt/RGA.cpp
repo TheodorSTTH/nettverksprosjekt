@@ -1,5 +1,7 @@
 #include "RGA.hpp"
 
+#include <utility>
+
 namespace crdt {
 
 RGA::RGA(std::uint32_t peer_id) : peer_id_(peer_id) {}
@@ -14,10 +16,14 @@ void RGA::observe(std::uint32_t remote_sequence) noexcept {
     }
 }
 
-InsertOp RGA::local_insert(char value, RGAID parent_id) {
+InsertOp RGA::local_insert(std::string value, RGAID parent_id) {
     const RGAID new_id = next_id();
     integrate(RGANode{value, new_id, parent_id, false});
-    return InsertOp{value, new_id, parent_id};
+    return InsertOp{std::move(value), new_id, parent_id};
+}
+
+InsertOp RGA::local_insert(char value, RGAID parent_id) {
+    return local_insert(std::string(1, value), parent_id);
 }
 
 DeleteOp RGA::local_delete(RGAID target_id) {
@@ -51,10 +57,9 @@ void RGA::apply_remote(const DeleteOp& op) {
 
 std::string RGA::to_string() const {
     std::string out;
-    out.reserve(nodes_.size());
     for (const auto& node : nodes_) {
         if (!node.tombstoned) {
-            out += node.value;
+            out.append(node.value);
         }
     }
     return out;
