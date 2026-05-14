@@ -28,7 +28,7 @@ struct ClientData {
 using WebSocket = uWS::WebSocket<false, true, ClientData>;
 using ConnectedClients = std::unordered_map<std::uint32_t, WebSocket*>;
 
-constexpr auto kClientUpdateInterval = std::chrono::seconds(0);
+constexpr auto kClientUpdateInterval = std::chrono::seconds(5);
 
 std::string dump_message(const nlohmann::json& message) {
     return message.dump();
@@ -196,6 +196,35 @@ private:
                     break;
                 }
 
+                case protocol::MessageType::CounterUpdate: {
+                    const auto update = protocol::parse_counter_update(queued.message);
+
+                    if (!update) {
+                        send_to_peer(
+                            queued.sender_peer_id,
+                            dump_message(protocol::serialize_error("invalid counter update"))
+                        );
+                        continue;
+                    }
+
+                    const auto applied = document_.apply_cookie_count(
+                        queued.sender_peer_id,
+                        update->count
+                    );
+
+                    if (applied) {
+                        changed = true;
+                        broadcast_counter_state();
+                    } else {
+                        send_to_peer(
+                            queued.sender_peer_id,
+                            dump_message(document_.cookie_counter_state(queued.sender_peer_id))
+                        );
+                    }
+
+                    break;
+                }
+
                 default:
                     send_to_peer(
                         queued.sender_peer_id,
@@ -207,6 +236,15 @@ private:
 
         if (changed) {
             document_.save();
+        }
+    }
+
+    void broadcast_counter_state() {
+        for (const auto& [peer_id, client] : clients_) {
+            client->send(
+                dump_message(document_.cookie_counter_state(peer_id)),
+                uWS::OpCode::TEXT
+            );
         }
     }
 
@@ -274,6 +312,11 @@ void WebSocketServer::run() {
                            dump_message(document_.snapshot_json()),
                            uWS::OpCode::TEXT
                        );
+
+                       ws->send(
+                           dump_message(document_.cookie_counter_state(data->peer_id)),
+                           uWS::OpCode::TEXT
+                       );
                    },
 
                .message =
@@ -306,6 +349,10 @@ void WebSocketServer::run() {
                                    dump_message(document_.snapshot_json()),
                                    uWS::OpCode::TEXT
                                );
+                               ws->send(
+                                   dump_message(document_.cookie_counter_state(ws->getUserData()->peer_id)),
+                                   uWS::OpCode::TEXT
+                               );
                                return;
 
                            case protocol::MessageType::Insert:
@@ -321,6 +368,38 @@ void WebSocketServer::run() {
                                    message
                                );
                                return;
+
+                           case protocol::MessageType::CounterUpdate:
+                               delayed_operations.enqueue(
+                                   ws->getUserData()->peer_id,
+                                   message
+                               );
+                               return;
+
+                           case protocol::MessageType::SetTitle: {
+                               const auto op = protocol::parse_set_title(message);
+                               if (!op) {
+                                   ws->send(
+                                       dump_message(protocol::serialize_error("invalid set_title message")),
+                                       uWS::OpCode::TEXT
+                                   );
+                                   return;
+                               }
+
+                               document_.apply_set_title(*op);
+
+                               // Broadcast the authoritative state to all clients (including sender)
+                               // so any client whose write lost the LWW race converges to the winner.
+                               auto state_msg = document_.title_state();
+                               state_msg["type"] = "set_title";
+                               const auto serialized = dump_message(state_msg);
+
+                               for (const auto& [peer_id, client] : connected_clients) {
+                                   client->send(serialized, uWS::OpCode::TEXT);
+                               }
+
+                               return;
+                           }
 
                            case protocol::MessageType::CursorUpdate: {
                                const auto cursor = protocol::parse_cursor_update(message);

@@ -71,6 +71,13 @@ type PeerLeftMessage = {
   peer_id: number
 }
 
+type CounterStateMessage = {
+  type: 'counter_state'
+  counter: 'cookies'
+  value: number
+  own_count: number
+}
+
 type ServerMessage =
   | AssignPeerMessage
   | SyncStateMessage
@@ -79,6 +86,7 @@ type ServerMessage =
   | RemoteCursorMessage
   | PeerLeftMessage
   | SetTitleMessage
+  | CounterStateMessage
   | ServerErrorMessage
 
 const defaultText = ''
@@ -136,6 +144,9 @@ export function useCollaborativeTextEditor() {
   const currentSelection = ref<TextSelection>(defaultSelection)
   const selectionRestore = ref<SelectionRestore | null>(null)
   const remoteCursorAnchors = ref<Record<number, CursorAnchor>>({})
+  const cookieServerCount = ref(0)
+  const cookieConfirmedOwnCount = ref(0)
+  const cookieOwnCount = ref(0)
 
   // LWW-Register for the document title. Local writes happen only on commit
   // (blur/Enter from DocumentTitle.vue); remote writes resolve via LWW order.
@@ -155,6 +166,9 @@ export function useCollaborativeTextEditor() {
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
   const isConnected = computed(() => socketState.value === 'connected')
+  const cookieDisplayCount = computed(() => (
+    cookieServerCount.value - cookieConfirmedOwnCount.value + cookieOwnCount.value
+  ))
   const remoteCursors = computed<RemoteEditorCursor[]>(() => {
     // Track editor text so this recomputes whenever CRDT visible order changes.
     editorText.value
@@ -449,6 +463,21 @@ export function useCollaborativeTextEditor() {
     recordHistory(editorText.value)
   }
 
+  function clickCookie() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      statusMessage.value = 'Reconnect to count cookies'
+      return
+    }
+
+    const nextCount = cookieOwnCount.value + 1
+    cookieOwnCount.value = nextCount
+    sendToServer({
+      type: 'counter_update',
+      counter: 'cookies',
+      count: nextCount,
+    })
+  }
+
   function undoEdit() {
     if (!canUndo.value) {
       return
@@ -559,6 +588,22 @@ export function useCollaborativeTextEditor() {
     statusMessage.value = 'Remote delete applied'
   }
 
+  function applyCounterState(message: CounterStateMessage) {
+    if (message.counter !== 'cookies') {
+      return
+    }
+
+    cookieServerCount.value = Math.max(0, message.value)
+    cookieConfirmedOwnCount.value = Math.max(0, message.own_count)
+    cookieOwnCount.value = Math.max(cookieOwnCount.value, cookieConfirmedOwnCount.value)
+  }
+
+  function resetCookieCounterState() {
+    cookieServerCount.value = 0
+    cookieConfirmedOwnCount.value = 0
+    cookieOwnCount.value = 0
+  }
+
   function handleServerMessage(event: MessageEvent<string>) {
     let message: ServerMessage
     try {
@@ -602,6 +647,10 @@ export function useCollaborativeTextEditor() {
         )
         break
 
+      case 'counter_state':
+        applyCounterState(message)
+        break
+
       case 'error':
         statusMessage.value = message.message ?? 'Server reported an error'
         requestFullSync()
@@ -634,6 +683,7 @@ export function useCollaborativeTextEditor() {
     }
 
     disconnectSocket()
+    resetCookieCounterState()
     socketState.value = 'connecting'
     statusMessage.value = 'Connecting to server'
 
@@ -641,6 +691,7 @@ export function useCollaborativeTextEditor() {
       socket = new WebSocket(serverUrl.value)
     } catch {
       socketState.value = 'disconnected'
+      resetCookieCounterState()
       statusMessage.value = 'Invalid server URL'
       return
     }
@@ -657,6 +708,7 @@ export function useCollaborativeTextEditor() {
 
     socket.onerror = () => {
       socketState.value = 'disconnected'
+      resetCookieCounterState()
       statusMessage.value = 'Could not reach server'
     }
 
@@ -665,6 +717,7 @@ export function useCollaborativeTextEditor() {
       statusMessage.value = 'Disconnected'
       socket = null
       remoteCursorAnchors.value = {}
+      resetCookieCounterState()
       lastSentCursorUpdate = ''
     }
   }
@@ -723,6 +776,8 @@ export function useCollaborativeTextEditor() {
     canRedo,
     canUndo,
     commitTitle,
+    cookieDisplayCount,
+    cookieServerCount,
     connectionLabel,
     editorText,
     remoteCursors,
@@ -733,6 +788,7 @@ export function useCollaborativeTextEditor() {
     socketState,
     statusMessage,
     title: titleRegister.value,
+    clickCookie,
     connectSocket,
     redoEdit,
     undoEdit,

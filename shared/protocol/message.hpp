@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crdt/RGA.hpp"
+#include "crdt/lww_register.hpp"
 
 namespace protocol {
 
@@ -20,6 +21,9 @@ enum class MessageType {
     CursorUpdate,
     RemoteCursor,
     PeerLeft,
+    CounterUpdate,
+    CounterState,
+    SetTitle,
     Error,
     Unknown
 };
@@ -27,6 +31,11 @@ enum class MessageType {
 struct CursorUpdate {
     std::optional<crdt::RGAID> anchor_id;
     std::uint32_t cursor_index = 0;
+};
+
+struct CounterUpdate {
+    std::string counter;
+    std::uint64_t count = 0;
 };
 
 struct ParseResult {
@@ -43,9 +52,20 @@ nlohmann::json serialize_insert(const crdt::InsertOp& op, MessageType type = Mes
 nlohmann::json serialize_delete(const crdt::DeleteOp& op, MessageType type = MessageType::Delete);
 nlohmann::json serialize_assign_peer_id(std::uint32_t peer_id);
 nlohmann::json serialize_sync_state(const crdt::RGA& document);
+nlohmann::json serialize_sync_state(
+    const crdt::RGA& document,
+    const crdt::LWWRegister<std::string>& title
+);
+nlohmann::json serialize_set_title(const crdt::LWWOperation<std::string>& op);
+nlohmann::json serialize_title_state(const crdt::LWWRegister<std::string>& title);
 nlohmann::json serialize_cursor_update(const CursorUpdate& cursor);
 nlohmann::json serialize_remote_cursor(std::uint32_t peer_id, const CursorUpdate& cursor);
 nlohmann::json serialize_peer_left(std::uint32_t peer_id);
+nlohmann::json serialize_counter_state(
+    const std::string& counter,
+    std::uint64_t value,
+    std::uint64_t own_count
+);
 nlohmann::json serialize_error(const std::string& message);
 
 std::optional<crdt::RGAID> parse_id(const nlohmann::json& value);
@@ -53,6 +73,8 @@ std::optional<crdt::RGANode> parse_node(const nlohmann::json& value);
 std::optional<crdt::InsertOp> parse_insert(const nlohmann::json& message);
 std::optional<crdt::DeleteOp> parse_delete(const nlohmann::json& message);
 std::optional<CursorUpdate> parse_cursor_update(const nlohmann::json& message);
+std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message);
+std::optional<crdt::LWWOperation<std::string>> parse_set_title(const nlohmann::json& message);
 
 ParseResult validate_client_message(const nlohmann::json& message);
 crdt::RGA document_from_snapshot(const nlohmann::json& snapshot, std::uint32_t peer_id);
