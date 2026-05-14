@@ -29,6 +29,24 @@ std::optional<std::uint32_t> parse_u32_field(const nlohmann::json& value, const 
     return static_cast<std::uint32_t>(number);
 }
 
+std::optional<std::uint64_t> parse_u64_field(const nlohmann::json& value, const char* key) {
+    if (!value.contains(key) ||
+        (!value.at(key).is_number_integer() && !value.at(key).is_number_unsigned())) {
+        return std::nullopt;
+    }
+
+    if (value.at(key).is_number_unsigned()) {
+        return value.at(key).get<std::uint64_t>();
+    }
+
+    const auto signed_number = value.at(key).get<std::int64_t>();
+    if (signed_number < 0) {
+        return std::nullopt;
+    }
+
+    return static_cast<std::uint64_t>(signed_number);
+}
+
 std::string type_string(MessageType type) {
     switch (type) {
         case MessageType::AssignPeerId:
@@ -51,6 +69,10 @@ std::string type_string(MessageType type) {
             return "remote_cursor";
         case MessageType::PeerLeft:
             return "peer_left";
+        case MessageType::CounterUpdate:
+            return "counter_update";
+        case MessageType::CounterState:
+            return "counter_state";
         case MessageType::Error:
             return "error";
         case MessageType::Unknown:
@@ -78,6 +100,8 @@ MessageType message_type(const nlohmann::json& message) {
     if (type == "cursor_update") return MessageType::CursorUpdate;
     if (type == "remote_cursor") return MessageType::RemoteCursor;
     if (type == "peer_left") return MessageType::PeerLeft;
+    if (type == "counter_update") return MessageType::CounterUpdate;
+    if (type == "counter_state") return MessageType::CounterState;
     if (type == "error") return MessageType::Error;
     return MessageType::Unknown;
 }
@@ -150,6 +174,19 @@ nlohmann::json serialize_remote_cursor(std::uint32_t peer_id, const CursorUpdate
 
 nlohmann::json serialize_peer_left(std::uint32_t peer_id) {
     return nlohmann::json{{"type", "peer_left"}, {"peer_id", peer_id}};
+}
+
+nlohmann::json serialize_counter_state(
+    const std::string& counter,
+    std::uint64_t value,
+    std::uint64_t own_count
+) {
+    return nlohmann::json{
+        {"type", "counter_state"},
+        {"counter", counter},
+        {"value", value},
+        {"own_count", own_count},
+    };
 }
 
 nlohmann::json serialize_error(const std::string& message) {
@@ -265,6 +302,24 @@ std::optional<CursorUpdate> parse_cursor_update(const nlohmann::json& message) {
     return CursorUpdate{anchor_id, static_cast<std::uint32_t>(cursor_index)};
 }
 
+std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message) {
+    if (!message.is_object() || !message.contains("counter") || !message.at("counter").is_string()) {
+        return std::nullopt;
+    }
+
+    const auto counter = message.at("counter").get<std::string>();
+    if (counter != "cookies") {
+        return std::nullopt;
+    }
+
+    const auto count = parse_u64_field(message, "count");
+    if (!count) {
+        return std::nullopt;
+    }
+
+    return CounterUpdate{counter, *count};
+}
+
 ParseResult validate_client_message(const nlohmann::json& message) {
     switch (message_type(message)) {
         case MessageType::Insert:
@@ -273,6 +328,8 @@ ParseResult validate_client_message(const nlohmann::json& message) {
             return parse_delete(message) ? ParseResult{true, {}} : ParseResult{false, "invalid delete message"};
         case MessageType::CursorUpdate:
             return parse_cursor_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid cursor update"};
+        case MessageType::CounterUpdate:
+            return parse_counter_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid counter update"};
         case MessageType::SyncRequest:
             return ParseResult{true, {}};
         default:
