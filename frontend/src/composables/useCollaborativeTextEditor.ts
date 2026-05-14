@@ -12,6 +12,15 @@ import {
 
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
+export type TextSelection = {
+  start: number
+  end: number
+}
+
+export type SelectionRestore = TextSelection & {
+  revision: number
+}
+
 type AssignPeerMessage = {
   type: 'assign_peer_id'
   peer_id: number
@@ -31,6 +40,7 @@ type ServerErrorMessage = {
 type ServerMessage = AssignPeerMessage | SyncStateMessage | InsertMessage | DeleteMessage | ServerErrorMessage
 
 const defaultText = ''
+const defaultSelection: TextSelection = { start: 0, end: 0 }
 
 function nowLabel() {
   return new Intl.DateTimeFormat(undefined, {
@@ -73,9 +83,12 @@ export function useCollaborativeTextEditor() {
   const lastSavedAt = ref<string | null>(null)
   const peerId = ref<number | null>(null)
   const wasmReady = ref(false)
+  const currentSelection = ref<TextSelection>(defaultSelection)
+  const selectionRestore = ref<SelectionRestore | null>(null)
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
+  let selectionRestoreRevision = 0
 
   let socket: WebSocket | null = null
   let engine: CrdtEngine | null = null
@@ -173,6 +186,50 @@ export function useCollaborativeTextEditor() {
 
   function visibleIds(): RgaId[] {
     return engine?.visibleIds() ?? []
+  }
+
+  function sameId(left: RgaId, right: RgaId) {
+    return left.peer_id === right.peer_id && left.sequence === right.sequence
+  }
+
+  function clampCursorIndex(index: number, max: number) {
+    return Math.max(0, Math.min(index, max))
+  }
+
+  function captureCursorAnchor() {
+    const ids = visibleIds()
+    const cursorIndex = clampCursorIndex(currentSelection.value.start, ids.length)
+
+    return {
+      fallbackIds: ids.slice(0, cursorIndex).reverse(),
+    }
+  }
+
+  function restoreCursorFromAnchor(anchor: { fallbackIds: RgaId[] }) {
+    const ids = visibleIds()
+    let cursorIndex = 0
+
+    for (const fallbackId of anchor.fallbackIds) {
+      const index = ids.findIndex((id) => sameId(id, fallbackId))
+      if (index !== -1) {
+        cursorIndex = index + 1
+        break
+      }
+    }
+
+    const selection = { start: cursorIndex, end: cursorIndex }
+    currentSelection.value = selection
+    selectionRestore.value = {
+      ...selection,
+      revision: ++selectionRestoreRevision,
+    }
+  }
+
+  function updateSelection(selection: TextSelection) {
+    currentSelection.value = {
+      start: Math.max(0, selection.start),
+      end: Math.max(0, selection.end),
+    }
   }
 
   function applyLocalTextChange(nextText: string) {
@@ -280,8 +337,10 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     engine.loadSnapshot(message.nodes)
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     hasUnsavedChanges.value = false
     lastSavedAt.value = nowLabel()
@@ -293,6 +352,7 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     const applied = engine.applyRemoteInsert(message)
     if (!applied) {
       requestFullSync()
@@ -301,6 +361,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote insert applied'
   }
@@ -310,6 +371,7 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     const applied = engine.applyRemoteDelete(message)
     if (!applied) {
       requestFullSync()
@@ -318,6 +380,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote delete applied'
   }
@@ -467,12 +530,14 @@ export function useCollaborativeTextEditor() {
     editorText,
     saveDocument,
     saveLabel,
+    selectionRestore,
     serverUrl,
     socketState,
     statusMessage,
     connectSocket,
     redoEdit,
     undoEdit,
+    updateSelection,
     updateText,
   }
 }
