@@ -3,21 +3,10 @@ FROM emscripten/emsdk:3.1.74 AS wasm
 WORKDIR /src
 
 COPY shared ./shared
+COPY frontend/scripts ./frontend/scripts
 COPY frontend/public ./frontend/public
 
-RUN mkdir -p frontend/public/wasm \
-    && emcc shared/wasm/rga_wasm_bindings.cpp shared/crdt/*.cpp \
-      -I shared \
-      --bind \
-      -std=c++17 \
-      -O2 \
-      -sMODULARIZE=1 \
-      -sEXPORT_ES6=1 \
-      -sEXPORT_NAME=createCrdtWasmModule \
-      -sENVIRONMENT=web \
-      -sALLOW_MEMORY_GROWTH=1 \
-      -sFILESYSTEM=0 \
-      -o frontend/public/wasm/crdt_wasm.js
+RUN node frontend/scripts/build-wasm.mjs
 
 FROM node:lts-alpine AS build
 
