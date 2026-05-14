@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocumentTitle from '../components/DocumentTitle.vue'
 import EditorToolbar from '../components/EditorToolbar.vue'
 import PlainTextEditor from '../components/PlainTextEditor.vue'
 import ServerSettings from '../components/ServerSettings.vue'
@@ -23,11 +24,10 @@ const editor = useCollaborativeTextEditor()
 
       <ServerSettings v-model:server-url="editor.serverUrl.value" @reconnect="editor.connectSocket" />
 
+      <DocumentTitle :model-value="editor.title.value" @commit="editor.commitTitle" />
+
       <div class="editor-meta">
-        <div>
-          <h1>Shared text file</h1>
-          <p>{{ editor.statusMessage.value }}</p>
-        </div>
+        <p>{{ editor.statusMessage.value }}</p>
         <span class="save-state">{{ editor.saveLabel.value }}</span>
       </div>
 
@@ -58,22 +58,14 @@ const editor = useCollaborativeTextEditor()
 
 .editor-meta {
   display: flex;
-  align-items: end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 22px 18px 12px;
-}
-
-.editor-meta h1 {
-  margin: 0;
-  color: #25292f;
-  font-size: clamp(1.6rem, 1.25rem + 1vw, 2.2rem);
-  line-height: 1.12;
-  letter-spacing: 0;
+  padding: 4px 18px 12px;
 }
 
 .editor-meta p {
-  margin: 7px 0 0;
+  margin: 0;
   color: #687383;
   font-size: 0.96rem;
 }
