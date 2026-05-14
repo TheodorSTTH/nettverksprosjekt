@@ -12,7 +12,8 @@ COPY CMakeLists.txt ./
 COPY backend ./backend
 COPY shared ./shared
 
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+RUN --mount=type=cache,target=/src/.cmake-deps \
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
     && cmake --build build --target crdt_server --config Release
 
 FROM debian:trixie-slim AS runtime
