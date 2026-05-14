@@ -79,7 +79,13 @@ Kjør `./run-tests.sh` i roten av prosjektet for å kjøre tester. Dette kan ta 
 
 ### Overordnet
 
-Vi bruker `compose.yaml` for å kjøre prosjektet.
+| Teknologivalg | Begrunnelse |
+| --------- | --------- |
+| Docker compose    | Vi valgte å bruke docker compose for å enkelt kjøre prosjektet på tvers av Fedora KDE, Windows & MacOS. Docker compose gjør det også enkelt å holde styr på porter & restart funksjonalitet |
+| WebAssembly    | Vi tok I bruk WASM for å kunne dele CRDT logikk mellom backend & frontend istedenfor å måtte implementere det dobbelt i c++ og typescript. |
+| Vue | Teamet var kjent med vue fra tideligere prosjekt sammen. Utover dette støtter vue komponenter, scoped css & kan enkelt kjøres med typescript |
+| c++ | Vi valgte dette for å få en høyere karakter og fordi det er kjapt |
+
 
 ### Shared
 
@@ -97,6 +103,33 @@ Vi har backend under `backend/` i roten av prosjektet.
 Vi kjører backenden med `backend/Dockerfile`.
 Backenden bygges med CMake og bruker delt CRDT/protokoll/server-kode fra `shared/`.
 
+## AsyncAPI
+
+WebSocket-protokollen er dokumentert i `asyncapi.yaml`.
+
+Installer AsyncAPI-verktøyene med:
+
+```bash
+npm install
+```
+
+Valider spesifikasjonen med:
+
+```bash
+npm run asyncapi:validate
+```
+
+Forhåndsvis dokumentasjonen lokalt med:
+
+```bash
+npm run asyncapi:preview
+```
+
+Generer HTML-dokumentasjon med:
+
+```bash
+npm run asyncapi:generate
+```
 
 ## Kom i gang
 
@@ -123,10 +156,8 @@ Stopp prosjektet:
 docker compose down
 ```
 
-Se logger med:
+Se logger på backend med:
 
 ```bash 
-docker compose logs -f
+docker compose logs backend
 ```
-
-
