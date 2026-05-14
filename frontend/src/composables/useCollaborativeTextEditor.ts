@@ -1,14 +1,25 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { useLWWRegister, type LWWMetadata } from './useLWWRegister'
+
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
 type ServerMessage = {
   type?: string
   content?: string
+  value?: string
+  timestamp?: number
+  peerId?: number
 }
 
 const DEFAULT_DOCUMENT_PATH = '/shared.txt'
+const DEFAULT_TITLE = 'Untitled'
 const SYNC_INTERVAL_MS = 3000
+
+// Until the server assigns one via an `assign_peer_id` message, pick a random
+// id so concurrent clients still get distinct LWW tiebreakers. Replace with
+// the server-assigned id once the backend supports it.
+const localPeerId = Math.floor(Math.random() * 0xffffffff) + 1
 
 const defaultText = [
   'Start writing your shared text file here.',
@@ -23,6 +34,10 @@ export function useCollaborativeTextEditor() {
   const statusMessage = ref('Disconnected')
   const hasUnsavedChanges = ref(false)
   const lastSavedAt = ref<string | null>(null)
+
+  // LWW-Register for the document title. Local writes happen only on commit
+  // (blur/Enter from DocumentTitle.vue); remote writes resolve via LWW order.
+  const titleRegister = useLWWRegister<string>(localPeerId, DEFAULT_TITLE)
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
@@ -142,6 +157,25 @@ export function useCollaborativeTextEditor() {
     statusMessage.value = sent ? 'Saved to server' : 'Saved locally'
   }
 
+  // Called by DocumentTitle.vue on commit (blur/Enter). Apply locally first so
+  // the UI reflects the change immediately, then broadcast the LWW op. If the
+  // server later returns a winning op with a higher timestamp, apply() will
+  // overwrite ours — the CRDT guarantees both replicas converge.
+  function commitTitle(newTitle: string) {
+    const op = titleRegister.set(newTitle)
+    sendToServer({
+      type: 'title:update',
+      documentPath: DEFAULT_DOCUMENT_PATH,
+      value: op.value,
+      timestamp: op.metadata.timestamp,
+      peerId: op.metadata.peerId,
+    })
+  }
+
+  function applyRemoteTitle(meta: LWWMetadata, value: string) {
+    titleRegister.apply({ value, metadata: meta })
+  }
+
   function applyServerSnapshot(content: string) {
     if (content === editorText.value) {
       hasUnsavedChanges.value = false
@@ -161,6 +195,17 @@ export function useCollaborativeTextEditor() {
 
       if (message.type === 'text:snapshot' && typeof message.content === 'string') {
         applyServerSnapshot(message.content)
+        return
+      }
+
+      if (
+        message.type === 'title:snapshot' &&
+        typeof message.value === 'string' &&
+        typeof message.timestamp === 'number' &&
+        typeof message.peerId === 'number'
+      ) {
+        applyRemoteTitle({ timestamp: message.timestamp, peerId: message.peerId }, message.value)
+        return
       }
     } catch {
       statusMessage.value = 'Ignored unsupported server message'
@@ -275,6 +320,7 @@ export function useCollaborativeTextEditor() {
   return {
     canRedo,
     canUndo,
+    commitTitle,
     connectionLabel,
     editorText,
     saveDocument,
@@ -282,6 +328,7 @@ export function useCollaborativeTextEditor() {
     serverUrl,
     socketState,
     statusMessage,
+    title: titleRegister.value,
     connectSocket,
     redoEdit,
     undoEdit,
