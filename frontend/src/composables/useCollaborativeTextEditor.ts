@@ -12,6 +12,27 @@ import {
 
 export type SocketState = 'connecting' | 'connected' | 'disconnected'
 
+export type TextSelection = {
+  start: number
+  end: number
+}
+
+export type SelectionRestore = TextSelection & {
+  revision: number
+}
+
+export type RemoteEditorCursor = {
+  peerId: number
+  label: string
+  color: string
+  cursorIndex: number
+}
+
+type CursorAnchor = {
+  anchorId: RgaId | null
+  cursorIndex: number
+}
+
 type AssignPeerMessage = {
   type: 'assign_peer_id'
   peer_id: number
@@ -28,9 +49,31 @@ type ServerErrorMessage = {
   message?: string
 }
 
-type ServerMessage = AssignPeerMessage | SyncStateMessage | InsertMessage | DeleteMessage | ServerErrorMessage
+type RemoteCursorMessage = {
+  type: 'remote_cursor'
+  peer_id: number
+  anchor_id: RgaId | null
+  cursor_index: number
+}
+
+type PeerLeftMessage = {
+  type: 'peer_left'
+  peer_id: number
+}
+
+type ServerMessage =
+  | AssignPeerMessage
+  | SyncStateMessage
+  | InsertMessage
+  | DeleteMessage
+  | RemoteCursorMessage
+  | PeerLeftMessage
+  | ServerErrorMessage
 
 const defaultText = ''
+const defaultSelection: TextSelection = { start: 0, end: 0 }
+const cursorUpdateDelayMs = 100
+const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
 
 function nowLabel() {
   return new Intl.DateTimeFormat(undefined, {
@@ -73,9 +116,15 @@ export function useCollaborativeTextEditor() {
   const lastSavedAt = ref<string | null>(null)
   const peerId = ref<number | null>(null)
   const wasmReady = ref(false)
+  const currentSelection = ref<TextSelection>(defaultSelection)
+  const selectionRestore = ref<SelectionRestore | null>(null)
+  const remoteCursorAnchors = ref<Record<number, CursorAnchor>>({})
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
+  let selectionRestoreRevision = 0
+  let cursorUpdateTimer: ReturnType<typeof setTimeout> | null = null
+  let lastSentCursorUpdate = ''
 
   let socket: WebSocket | null = null
   let engine: CrdtEngine | null = null
@@ -85,6 +134,25 @@ export function useCollaborativeTextEditor() {
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
   const isConnected = computed(() => socketState.value === 'connected')
+  const remoteCursors = computed<RemoteEditorCursor[]>(() => {
+    // Track editor text so this recomputes whenever CRDT visible order changes.
+    editorText.value
+    const ids = visibleIds()
+
+    return Object.entries(remoteCursorAnchors.value)
+      .map(([peerId, anchor]) => {
+        const numericPeerId = Number(peerId)
+        const cursorIndex = resolveCursorIndex(anchor, ids)
+
+        return {
+          peerId: numericPeerId,
+          label: `Peer ${numericPeerId}`,
+          color: peerColor(numericPeerId),
+          cursorIndex,
+        }
+      })
+      .sort((left, right) => left.peerId - right.peerId)
+  })
 
   const saveLabel = computed(() => {
     if (!wasmReady.value) {
@@ -173,6 +241,123 @@ export function useCollaborativeTextEditor() {
 
   function visibleIds(): RgaId[] {
     return engine?.visibleIds() ?? []
+  }
+
+  function sameId(left: RgaId, right: RgaId) {
+    return left.peer_id === right.peer_id && left.sequence === right.sequence
+  }
+
+  function clampCursorIndex(index: number, max: number) {
+    return Math.max(0, Math.min(index, max))
+  }
+
+  function peerColor(remotePeerId: number) {
+    return peerColors[remotePeerId % peerColors.length] ?? '#2563eb'
+  }
+
+  function cursorAnchorFromSelection(selection = currentSelection.value): CursorAnchor {
+    const ids = visibleIds()
+    const cursorIndex = clampCursorIndex(selection.start, ids.length)
+    const anchorId = cursorIndex === 0 ? null : ids[cursorIndex - 1] ?? null
+
+    return { anchorId, cursorIndex }
+  }
+
+  function resolveCursorIndex(anchor: CursorAnchor, ids = visibleIds()) {
+    if (anchor.anchorId) {
+      const anchoredIndex = ids.findIndex((id) => sameId(id, anchor.anchorId as RgaId))
+      if (anchoredIndex !== -1) {
+        return anchoredIndex + 1
+      }
+    }
+
+    return clampCursorIndex(anchor.cursorIndex, ids.length)
+  }
+
+  function captureCursorAnchor() {
+    const ids = visibleIds()
+    const cursorIndex = clampCursorIndex(currentSelection.value.start, ids.length)
+
+    return {
+      fallbackIds: ids.slice(0, cursorIndex).reverse(),
+    }
+  }
+
+  function restoreCursorFromAnchor(anchor: { fallbackIds: RgaId[] }) {
+    const ids = visibleIds()
+    let cursorIndex = 0
+
+    for (const fallbackId of anchor.fallbackIds) {
+      const index = ids.findIndex((id) => sameId(id, fallbackId))
+      if (index !== -1) {
+        cursorIndex = index + 1
+        break
+      }
+    }
+
+    const selection = { start: cursorIndex, end: cursorIndex }
+    currentSelection.value = selection
+    selectionRestore.value = {
+      ...selection,
+      revision: ++selectionRestoreRevision,
+    }
+  }
+
+  function updateSelection(selection: TextSelection) {
+    currentSelection.value = {
+      start: Math.max(0, selection.start),
+      end: Math.max(0, selection.end),
+    }
+    scheduleCursorUpdate()
+  }
+
+  function sendCursorUpdateNow() {
+    cursorUpdateTimer = null
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    const anchor = cursorAnchorFromSelection()
+    const payload = {
+      type: 'cursor_update',
+      anchor_id: anchor.anchorId,
+      cursor_index: anchor.cursorIndex,
+    }
+    const serialized = JSON.stringify(payload)
+    if (serialized === lastSentCursorUpdate) {
+      return
+    }
+
+    socket.send(serialized)
+    lastSentCursorUpdate = serialized
+  }
+
+  function scheduleCursorUpdate() {
+    if (cursorUpdateTimer) {
+      return
+    }
+
+    cursorUpdateTimer = window.setTimeout(sendCursorUpdateNow, cursorUpdateDelayMs)
+  }
+
+  function applyRemoteCursor(message: RemoteCursorMessage) {
+    if (message.peer_id === peerId.value) {
+      return
+    }
+
+    remoteCursorAnchors.value = {
+      ...remoteCursorAnchors.value,
+      [message.peer_id]: {
+        anchorId: message.anchor_id,
+        cursorIndex: Math.max(0, message.cursor_index),
+      },
+    }
+  }
+
+  function removeRemoteCursor(peerIdToRemove: number) {
+    const next = { ...remoteCursorAnchors.value }
+    delete next[peerIdToRemove]
+    remoteCursorAnchors.value = next
   }
 
   function applyLocalTextChange(nextText: string) {
@@ -280,8 +465,10 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     engine.loadSnapshot(message.nodes)
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     hasUnsavedChanges.value = false
     lastSavedAt.value = nowLabel()
@@ -293,6 +480,7 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     const applied = engine.applyRemoteInsert(message)
     if (!applied) {
       requestFullSync()
@@ -301,6 +489,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote insert applied'
   }
@@ -310,6 +499,7 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    const cursorAnchor = captureCursorAnchor()
     const applied = engine.applyRemoteDelete(message)
     if (!applied) {
       requestFullSync()
@@ -318,6 +508,7 @@ export function useCollaborativeTextEditor() {
     }
 
     editorText.value = engine.toString()
+    restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
     statusMessage.value = 'Remote delete applied'
   }
@@ -349,6 +540,14 @@ export function useCollaborativeTextEditor() {
 
       case 'remote_delete':
         applyRemoteDelete(message)
+        break
+
+      case 'remote_cursor':
+        applyRemoteCursor(message)
+        break
+
+      case 'peer_left':
+        removeRemoteCursor(message.peer_id)
         break
 
       case 'error':
@@ -397,7 +596,9 @@ export function useCollaborativeTextEditor() {
     socket.onopen = () => {
       socketState.value = 'connected'
       statusMessage.value = 'Connected to server'
+      lastSentCursorUpdate = ''
       requestFullSync()
+      scheduleCursorUpdate()
     }
 
     socket.onmessage = handleServerMessage
@@ -411,6 +612,8 @@ export function useCollaborativeTextEditor() {
       socketState.value = 'disconnected'
       statusMessage.value = 'Disconnected'
       socket = null
+      remoteCursorAnchors.value = {}
+      lastSentCursorUpdate = ''
     }
   }
 
@@ -455,6 +658,10 @@ export function useCollaborativeTextEditor() {
   onBeforeUnmount(() => {
     isDestroyed = true
     window.removeEventListener('keydown', handleShortcut)
+    if (cursorUpdateTimer) {
+      window.clearTimeout(cursorUpdateTimer)
+      cursorUpdateTimer = null
+    }
     disconnectSocket()
     engine?.destroy()
     engine = null
@@ -465,14 +672,17 @@ export function useCollaborativeTextEditor() {
     canUndo,
     connectionLabel,
     editorText,
+    remoteCursors,
     saveDocument,
     saveLabel,
+    selectionRestore,
     serverUrl,
     socketState,
     statusMessage,
     connectSocket,
     redoEdit,
     undoEdit,
+    updateSelection,
     updateText,
   }
 }

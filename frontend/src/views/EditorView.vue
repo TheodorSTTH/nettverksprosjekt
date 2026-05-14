@@ -31,7 +31,13 @@ const editor = useCollaborativeTextEditor()
         <span class="save-state">{{ editor.saveLabel.value }}</span>
       </div>
 
-      <PlainTextEditor :model-value="editor.editorText.value" @update:model-value="editor.updateText" />
+      <PlainTextEditor
+        :model-value="editor.editorText.value"
+        :remote-cursors="editor.remoteCursors.value"
+        :selection-restore="editor.selectionRestore.value"
+        @selection-change="editor.updateSelection"
+        @update:model-value="editor.updateText"
+      />
     </section>
   </main>
 </template>

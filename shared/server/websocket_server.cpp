@@ -28,7 +28,7 @@ struct ClientData {
 using WebSocket = uWS::WebSocket<false, true, ClientData>;
 using ConnectedClients = std::unordered_map<std::uint32_t, WebSocket*>;
 
-constexpr auto kClientUpdateInterval = std::chrono::seconds(2);
+constexpr auto kClientUpdateInterval = std::chrono::seconds(0);
 
 std::string dump_message(const nlohmann::json& message) {
     return message.dump();
@@ -277,7 +277,7 @@ void WebSocketServer::run() {
                    },
 
                .message =
-                   [this, &delayed_operations](auto* ws, std::string_view raw_message, uWS::OpCode) {
+                   [this, &connected_clients, &delayed_operations](auto* ws, std::string_view raw_message, uWS::OpCode) {
                        nlohmann::json message;
 
                        try {
@@ -322,6 +322,30 @@ void WebSocketServer::run() {
                                );
                                return;
 
+                           case protocol::MessageType::CursorUpdate: {
+                               const auto cursor = protocol::parse_cursor_update(message);
+                               if (!cursor) {
+                                   ws->send(
+                                       dump_message(protocol::serialize_error("invalid cursor update")),
+                                       uWS::OpCode::TEXT
+                                   );
+                                   return;
+                               }
+
+                               const auto sender_peer_id = ws->getUserData()->peer_id;
+                               const auto remote_cursor = dump_message(
+                                   protocol::serialize_remote_cursor(sender_peer_id, *cursor)
+                               );
+
+                               for (const auto& [peer_id, client] : connected_clients) {
+                                   if (peer_id != sender_peer_id) {
+                                       client->send(remote_cursor, uWS::OpCode::TEXT);
+                                   }
+                               }
+
+                               return;
+                           }
+
                            default:
                                ws->send(
                                    dump_message(protocol::serialize_error("unsupported message type")),
@@ -333,7 +357,14 @@ void WebSocketServer::run() {
 
                .close =
                    [&connected_clients](auto* ws, int, std::string_view) {
-                       connected_clients.erase(ws->getUserData()->peer_id);
+                       const auto peer_id = ws->getUserData()->peer_id;
+                       const auto peer_left = dump_message(protocol::serialize_peer_left(peer_id));
+
+                       connected_clients.erase(peer_id);
+
+                       for (const auto& [_, client] : connected_clients) {
+                           client->send(peer_left, uWS::OpCode::TEXT);
+                       }
                    },
            })
         .listen(port_, [this](auto* token) {
