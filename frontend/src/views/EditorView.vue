@@ -33,6 +33,7 @@ const editor = useCollaborativeTextEditor()
 
       <PlainTextEditor
         :model-value="editor.editorText.value"
+        :remote-cursors="editor.remoteCursors.value"
         :selection-restore="editor.selectionRestore.value"
         @selection-change="editor.updateSelection"
         @update:model-value="editor.updateText"
