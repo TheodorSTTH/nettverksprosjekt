@@ -66,8 +66,8 @@ jobs:
           docker run --rm --entrypoint sh crdt-frontend:ci -c '
             set -e
             ls -lh dist/wasm/
-            test -f dist/wasm/crdt_rga.js   || { echo "missing dist/wasm/crdt_rga.js";   exit 1; }
-            test -f dist/wasm/crdt_rga.wasm || { echo "missing dist/wasm/crdt_rga.wasm"; exit 1; }
+            test -f dist/wasm/crdt_wasm.js   || { echo "missing dist/wasm/crdt_wasm.js";   exit 1; }
+            test -f dist/wasm/crdt_wasm.wasm || { echo "missing dist/wasm/crdt_wasm.wasm"; exit 1; }
           '
 
       # Start all containers in the background
