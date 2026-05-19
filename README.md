@@ -54,11 +54,17 @@ sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
 
 ### Dokumentredigering
 
-Flere brukere kan redigere samme tekst samtidig. Dette innebærer både sletting og skriving hvor som helst i dokumentet. Brukerne kan også se hvor andre brukere har markøren sin. Hver server håndterer i dag ett dokument. Dersom en bruker mister nettverkstilkoblingen og senere kobler seg opp igjen, blir lokale endringer samkjørt med endringer som andre brukere gjorde mens brukeren var frakoblet.
+Flere brukere kan redigere samme tekst samtidig. Dette innebærer både sletting og skriving hvor som helst i dokumentet. Brukerne kan også se hvor andre brukere har markøren sin. Markørposisjon er **ikke** en CRDT — den kringkastes ephemeralt mellom klienter fordi den ikke trenger å konvergere, kun reflektere siste kjente posisjon. Hver server håndterer i dag ett dokument.
+
+### Offline-redigering
+
+Dersom en bruker mister forbindelsen til serveren kan vedkommende fortsette å redigere dokumentet lokalt. Tekstendringer, tittelendringer og cookie-klikk køes opp i klientens minne (og persisteres til `localStorage` slik at de overlever en page reload). Når forbindelsen kommer tilbake forsøker klienten automatisk å koble til igjen med eksponentiell backoff, og spiller deretter av den lokale køen mot serveren. CRDT-en sørger for at alle klienter konvergerer til samme tilstand uavhengig av hvor lenge brukeren var frakoblet eller hvilke endringer andre brukere gjorde i mellomtiden.
+
+For å gjøre offline-modus enklere å teste finnes en "Go offline / Go online"-knapp i serverpanelet. Den lukker WebSocket-tilkoblingen og blokkerer auto-reconnect inntil den trykkes igjen. Knappen ble lagt til fordi nettleserens innebygde Offline-modus i utviklerverktøyene er upålitelig for WebSocket-tilkoblinger, særlig i Incognito og Firefox, hvor eksisterende tilkoblinger ikke alltid lukkes.
 
 ### Cookie clicker
 
-Flere brukere kan trykke på den samme cookie clickeren samtidig, og telleren blir samkjørt mellom klientene. Dersom en bruker mister nettverkstilkoblingen og senere kobler seg opp igjen, blir lokale endringer samkjørt med endringer som andre brukere gjorde mens brukeren var frakoblet.
+Flere brukere kan trykke på den samme cookie clickeren samtidig, og telleren blir samkjørt mellom klientene. Klikk gjort mens brukeren er frakoblet køes opp lokalt og samkjøres ved reconnect på samme måte som tekstredigering.
 
 ### Setting av dokument tittel
 
@@ -72,6 +78,7 @@ Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemme
 - Det er ikke mulig å ha flere dokumenter på samme server
 - Det er ikke mulig å se versjonshistorikk av dokumenter
 - Endring av dokument er ikke passordbeskyttet
+- Tombstones (slettede tegn) samles opp uten opprydding; minnebruken vokser over tid med antall redigeringer i stedet for faktisk tekststørrelse
 
 ### Framtidige endringer
 - Få klienter til å sende markørposisjon når en annen klient blir med på å redigere et dokument, slik at nye klienter umiddelbart kan se hvor folk redigerer
@@ -79,12 +86,13 @@ Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemme
 - Legge til støtte for flere dokumenter
 - Legge til muligheten for å se versjonshistorikk på ulike dokumenter
 - Legge til passordbeskyttelse på redigering og lesing av dokumenter
+- Implementere garbage collection av tombstones via causal stability for å hindre at minnebruken vokser ubegrenset
 
 ## Avhengigheter
 
 ### C++
 - `nlohmann/json`: Et header-only JSON-bibliotek for C++. Det brukes til å parse og serialisere meldinger og snapshots mellom klient og server.
-- `uSockets` og `uWebSockets`: Biblioteker for hendelsesdrevet nettverk og WebSocket-kommunikasjon i C++. De brukes til backend-serveren som tar imot og videresender CRDT-operasjoner.
+- `uSockets` og `uWebSockets`: Biblioteker for hendelsesdrevet nettverk og WebSocket-kommunikasjon i C++. De brukes til backend-serveren som tar imot og videresender CRDT-operasjoner. Vi valgte `uWebSockets` fremfor alternativer som `Boost.Beast` og `libwebsockets` fordi det har et minimalt og rett-på-sak API, håndterer HTTP-upgrade, framing og keepalive automatisk, og lar oss kjøre alle tilkoblinger på én event-loop uten egen trådhåndtering. Det passer godt til vårt use-case med få samtidige klienter og korte JSON-meldinger.
 - `Catch2`: Et testrammeverk for C++. Det brukes til testing av CRDT-, protokoll- og dokumentlogikken.
 
 ### Frontend
@@ -235,7 +243,7 @@ Avhengighetsretningen er enveis: `backend/server/` bruker `backend/protocol/` og
 
 ### Samtidighet på serveren
 
-Serveren håndterer en tråd per WebSocket-tilkobling, levert av `uWebSockets`. All delt tilstand er beskyttet av en `std::mutex` rundt `DocumentState`. Operasjoner serialiseres altså gjennom samme lås før de blir kringkastet videre.
+Serveren benytter `uWebSockets` sin enkelttrådede event-loop `uWS::App`, som multiplekser alle WebSocket-tilkoblinger på én tråd. I tillegg kjører én bakgrunnstråd som forsinker behandlingen av innkommende operasjoner med `kClientUpdateInterval` for å gjøre samtidig redigering observerbar under demonstrasjon, før den leverer batchen tilbake til event-loopen via `loop_->defer`. `DocumentState` er beskyttet av en `std::mutex` for å gardere mot fremtidige utvidelser som introduserer flere tråder.
 
 ### Persistens
 
