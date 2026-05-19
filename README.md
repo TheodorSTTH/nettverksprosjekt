@@ -1,13 +1,56 @@
 # CookieDoc
+[![Backend CI](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/backend-ci.yml)
+
+
+[![Docker CI](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/docker-ci.yml/badge.svg)](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/docker-ci.yml)
+
+
 Nettverksprosjekt - conflict-free replicated data types.
 ---
-CookieDoc er et sanntidsverktøy for samskriving og delt cookie-teller som lar flere anonyme brukere samarbeide over lokalt nettverk. Prosjektet bruker CRDT-er for å la klienter gjøre endringer lokalt og samkjøre dem når forbindelsen kommer tilbake.
+CookieDoc er et sanntidsverktøy for samskriving og delt cookie-teller som lar flere anonyme brukere samarbeide over lokalt nettverk. Prosjektet bruker CRDT-er (Conflict-free Replicated Data Types) for å la klienter gjøre endringer lokalt og samkjøre dem automatisk når forbindelsen kommer tilbake, uten at noen sentral instans trenger å avgjøre hvem som "vant".
+
+En CRDT er en datastruktur som kan eksistere på flere enheter samtidig og alltid konvergere til samme tilstand, uavhengig av rekkefølgen endringene kom inn i. Dette betyr at to brukere kan redigere samme dokument samtidig (også uten nettverksforbindelse) og at resultatet alltid blir konsistent når de kobler seg til igjen.
 
 ## Funksjonalitet
 
 ### Hosting
 
 Hver bruker hoster sin egen server som lagrer dokumentet. Andre brukere kan koble seg til ved å skrive inn WebSocket-lenken din (for eksempel `ws://10.22.172.80:3030/ws`) og deretter redigere det samme dokumentet. Brukere kan se tilkoblingsstatusen sin og bruke `Ctrl+Z` for å angre lokale endringer.
+
+**OBS!**
+dersom andre ikke får til å koble opp mot din kjørende server, kan dette skyldes browser-restriksjoner som ikke lar enheter koble seg til andres localhost lenker. Hvis dette problemet forekommer, må man tilgjengeligjøre localhost-addressen ved å kjøre følgende kommandoer: 
+
+##### som **administrator** i CMD (Windows):
+
+```cmd
+> netsh interface portproxy add v4tov4 listenport=3030 listenaddress=0.0.0.0 connectport=3030 connectaddress=127.0.0.1
+
+> netsh interface portproxy add v4tov4 listenport=8080 listenaddress=0.0.0.0 connectport=8080 connectaddress=127.0.0.1
+
+> netsh advfirewall firewall add rule name="CookieDoc Backend" protocol=TCP dir=in localport=3030 action=allow
+
+> netsh advfirewall firewall add rule name="CookieDoc Frontend" protocol=TCP dir=in localport=8080 action=allow
+```
+
+##### macOS (Terminal):
+
+```bash
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+```
+
+##### Linux med `ufw` (Ubuntu/Debian):
+
+```bash
+sudo ufw allow 3030/tcp
+sudo ufw allow 8080/tcp
+```
+
+##### Linux med `iptables`:
+
+```bash
+sudo iptables -A INPUT -p tcp --dport 3030 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+```
 
 ### Dokumentredigering
 
@@ -62,7 +105,23 @@ Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemme
 
 ## Installasjonsinstruksjoner
 
-1. klon repo eller unzip
+### Forutsetninger
+
+For å kjøre prosjektet trenger du følgende installert lokalt:
+
+- **Docker** og **Docker Compose** (alt av bygging og kjøring skjer i containere, så du trenger ikke installere C++, CMake, Emscripten eller Node selv). Se [docs.docker.com/get-docker](https://docs.docker.com/get-docker/).
+- **Git**, dersom du vil klone repoet i stedet for å pakke ut en zip.
+
+### Hente prosjektet
+
+Klon repoet:
+
+```bash
+git clone https://github.com/TheodorSTTH/nettverksprosjekt.git
+cd nettverksprosjekt
+```
+
+Alternativt, pakk ut den utleverte zip-filen og naviger til prosjektroten.
 
 ## Instruksjoner for å bruke løsningen
 
@@ -101,7 +160,26 @@ docker compose up -d --build backend
 
 ## Hvordan kjøre tester
 
-Kjør `./run-tests.sh` i roten av prosjektet for å kjøre tester. Dette kan ta en stund.
+### Kjøre tester lokalt
+
+Kjør `./run-tests.sh` i roten av prosjektet for å kjøre hele testsuiten. Dette kan ta en stund første gang, siden CMake må laste ned og bygge `Catch2`.
+
+Testene kjøres også automatisk i CI på hver push og pull request mot `dev` og `main`. Se `backend-ci.yaml` for detaljer.
+
+### Rammeverk
+
+Vi bruker **Catch2 v3** for alle C++-tester. Det er et header-only testrammeverk uten ekstern oppsett, integrert i prosjektet via CMake.
+
+### Hva testes
+
+Testene er delt mellom `shared/tests/` (ren CRDT-logikk) og `backend/tests/` (server- og protokollogikk):
+
+- **`test_rga.cpp`**: dekker RGA, både basis-operasjoner, edge cases (sletting av første/siste tegn, innsetting etter tombstones, Unicode), idempotens (samme operasjon to ganger endrer ikke tilstanden), kommutativitet (A før B gir samme resultat som B før A), og konvergens (concurrent inserts på samme parent gir samme resultat på alle replikaer uavhengig av ankomstrekkefølge).
+- **`test_lww_register.cpp`**: dekker LWWRegister, inkludert tiebreaker på `peer_id` når tidsstempler er like, og at Lamport-klokken oppdateres riktig ved fjern-skriving.
+- **`test_g_counter.cpp`**: dekker GCounter, med vekt på at merge tar maks per peer, og at operasjonen er kommutativ, idempotent og assosiativ.
+- **`test_document_state.cpp`**: dekker server-laget. Tester at insert med ukjent parent avvises, at snapshot lagres og lastes korrekt (inkludert tombstones og Unicode), og at cookie-telleren persisteres på tvers av omstart.
+- **`test_protocol.cpp`**: dekker JSON-serialisering. Round-trip-tester for alle meldingstyper, validering av innkommende meldinger, og avvisning av malformerte meldinger.
+
 
 ## Arkitektur
 
@@ -110,26 +188,138 @@ Kjør `./run-tests.sh` i roten av prosjektet for å kjøre tester. Dette kan ta 
 | Teknologivalg | Begrunnelse |
 | --------- | --------- |
 | Docker compose    | Vi valgte å bruke docker compose for å enkelt kjøre prosjektet på tvers av Fedora KDE, Windows & MacOS. Docker compose gjør det også enkelt å holde styr på porter & restart funksjonalitet |
-| WebAssembly    | Vi tok I bruk WASM for å kunne dele CRDT logikk mellom backend & frontend istedenfor å måtte implementere det dobbelt i c++ og typescript. |
-| Vue | Teamet var kjent med vue fra tideligere prosjekt sammen. Utover dette støtter vue komponenter, scoped css & kan enkelt kjøres med typescript |
-| c++ | Vi valgte dette for å få en høyere karakter og fordi det er kjapt |
+| WebAssembly    | Vi tok i bruk WASM for å kunne dele CRDT logikk mellom backend & frontend istedenfor å måtte implementere det dobbelt i C++ og typescript. |
+| Vue | Teamet var kjent med vue fra tidligere prosjekt sammen. Utover dette støtter vue komponenter, scoped css & kan enkelt kjøres med typescript |
+| C++ | Vi valgte C++ fordi det er ett kjapt programmerings språk og gruppen ville utfordre seg |
+
+CookieDoc er bygget som en klient-server-applikasjon der hver bruker hoster sin egen server, og andre brukere kobler seg til via WebSocket. Serveren holder den autoritative tilstanden til dokumentet, mens hver klient holder sin egen lokale kopi for å kunne redigere uten å vente på nettverket.
+
+### Delt CRDT-kode
+
+CRDT-logikken ligger under `shared/` og er skrevet en gang i C++. Den samme koden kjøres to steder:
+
+- Backend kompilerer den direkte inn i serveren via CMake.
+- Frontend kompilerer den til WebAssembly med Emscripten, og kaller inn i den fra TypeScript via bindings i `shared/wasm/rga_wasm_bindings.cpp`.
+
+Dette gir en felles implementasjon av merge-logikken på tvers av klient og server.
+
+### Moduler
+
+Koden er delt inn slik at CRDT-logikken er fullstendig isolert fra nettverk og I/O:
+
+```
+shared/
+  crdt/      ren CRDT-logikk, ingen avhengighet til JSON eller nettverk
+  wasm/      bindings som eksponerer CRDT-en til JavaScript via Emscripten
+
+backend/
+  protocol/  serialiserer CRDT-operasjoner til/fra JSON, validerer meldinger
+  server/    WebSocket-server, tilkoblinger, broadcast, persistens
+```
+
+- `shared/crdt/` inneholder de tre CRDT-typene: `RGA` (tekst), `LWWRegister` (tittel) og `GCounter` (cookie-teller). Disse vet ingenting om nettverk eller serialisering, og brukes uendret både av backend og frontend.
+- `shared/wasm/` inneholder Emscripten-bindings som lar frontend kalle inn i C++-koden fra TypeScript.
+- `backend/protocol/` oversetter mellom CRDT-operasjoner og JSON-meldinger, og validerer innkommende meldinger fra klientene.
+- `backend/server/` bruker `uWebSockets` til å ta imot tilkoblinger, og `DocumentState` til å holde den samlede dokumenttilstanden (RGA + LWW + GCounter + snapshot-fil).
+
+Avhengighetsretningen er enveis: `backend/server/` bruker `backend/protocol/` og `shared/crdt/`. `shared/crdt/` bruker ingenting annet. Den er ren logikk og kan testes uten å starte en server eller en nettleser.
+
+### Dataflyt for en redigering
+
+1. Bruker trykker en tast i nettleseren.
+2. Frontend kaller inn i WASM, som genererer en `InsertOp` lokalt og oppdaterer den lokale RGA-en umiddelbart.
+3. Frontend sender operasjonen som JSON over WebSocket til serveren.
+4. Serveren tar låsen, lar `DocumentState` anvende operasjonen på sin RGA, og skriver et snapshot til disk.
+5. Serveren sender operasjonen videre til alle andre tilkoblede klienter.
+6. Hver mottakende klient anvender operasjonen på sin lokale RGA, og brukergrensesnittet oppdateres.
+
+### Samtidighet på serveren
+
+Serveren håndterer en tråd per WebSocket-tilkobling, levert av `uWebSockets`. All delt tilstand er beskyttet av en `std::mutex` rundt `DocumentState`. Operasjoner serialiseres altså gjennom samme lås før de blir kringkastet videre.
+
+### Persistens
+
+Hver gang en operasjon anvendes, lagrer serveren et fullt JSON-snapshot av dokumenttilstanden (noder, tombstones, tittel, cookie-teller) til disk. Når serveren starter på nytt, leses snapshotet inn igjen.
+
+### Offline-redigering
+
+Når en klient mister tilkoblingen, fortsetter den å redigere mot sin lokale RGA-kopi. Operasjonene legges i kø. Når tilkoblingen kommer tilbake, sendes køen til serveren, som anvender dem som vanlige operasjoner. CRDT-ens matematiske egenskaper garanterer at alle replikaer konvergerer til samme tilstand uansett hvilken rekkefølge operasjonene kommer i.
+
+### Hvorfor denne arkitekturen
+Det viktigste arkitekturvalget i prosjektet er at CRDT-logikken er skrevet en gang i C++ under shared/, og brukes uendret både av backend og frontend. Backend kompilerer den direkte inn i serveren, mens frontend kompilerer den til WebAssembly via Emscripten og kaller inn i den fra TypeScript. Alternativet ville vært å implementere RGA, LWWRegister og GCounter to ganger, en gang i C++ for serveren og en gang i TypeScript for nettleseren. Det ville duplisert logikken, gjort det vanskelig å holde merge-semantikken konsistent over tid, og økt risikoen for at klient og server blir forksjellig ved en endring som bare blir gjort ett sted.
+
+Denne oppdelingen følger prinsippet om Separation of Concerns (SoC): shared/crdt/ har ett ansvar, som er å implementere CRDT-operasjonene riktig, og vet ingenting om nettverk, JSON eller brukergrensesnitt. Den følger også Single Responsibility-prinsippet fra SOLID, ved at hver modul (crdt/, protocol/, server/) har en klart avgrenset rolle, og at avhengighetene går en vei. CRDT-koden blir dermed et selvstendig bibliotek som kan testes isolert og gjenbrukes på tvers av plattformer, uten at det krever endringer i hvordan serveren eller frontenden er bygget.
+
+### Svakheter ved arkitekturen
+
+Arkitekturen har også noen tydelige svakheter som er verdt å nevne:
+
+- **WASM-bindings krever ekstra glue-kode.** Hver C++-klasse som skal nås fra TypeScript må eksponeres manuelt i `rga_wasm_bindings.cpp`. Endrer vi CRDT-API-et, må vi også oppdatere bindings. Dette er en pris vi betaler for å slippe å duplisere CRDT-logikken.
+- **En lås rundt hele dokumentet.** All serverarbeid går gjennom samme `std::mutex` rundt `DocumentState`. Dette er enkelt og trygt, men skalerer dårlig dersom mange brukere redigerer samtidig.
+- **Tombstones samles opp uten opprydding.** Slettede tegn blir liggende som tombstones for at konkurrerende operasjoner skal kunne finne foreldrenoden sin. Vi har ikke implementert garbage collection, så minnebruken vokser med antall redigeringer over tid, ikke med faktisk tekststørrelse.
+- **En server håndterer kun ett dokument.** Dette er bakt inn i `DocumentState`-strukturen, og er ikke noe som kan konfigureres uten en større endring.
+
+## Continuous Integration
+CI for dette prosjektet består i hovedsak av to .yaml workflow filer. Begge workflow filene trigges enten på push eller en PR til branchene `dev` og `main`.
+
+### backend-ci.yaml
+Ansvarlig for å kjøre backend workflow. Workflow filen er delt opp i følgende steg:
+
+**1:**
+    `actions/checkout@v4` kloner repositoriet til github sin egne actions runner `ubuntu-latest`, på den branchen som trigget workflowen.
+
+**2:**
+    installerer nødvendige dependencies på github runners sin instansierte VM for jobben. Dependencies er definert i `CMakeLists.txt`, hvor det da kjøres en command for å laste ned alle dependencies fra denne filen:
+
+    
+**3:**
+    cacher nedlastede C++ dependencies i `.cmake-deps` basert på en hash av `CMakeLists.txt`. Treffer cachen dersom filen er uendret.
+
+**4:**
+    kjører CMake for å generere ninja build-filer med tester aktivert (`-DBUILD_TESTS=ON`) og release-optimalisering.
+
+**5:**
+    kompilerer backend og testsuiten med den genererte build-konfigurasjonen.
+
+**6:**
+    kjører alle Catch2-tester via `ctest`. Printer full output ved feil.
 
 
-### Shared
+### docker-ci.yaml
+Ansvarlig for å kjøre en docker workflow, som sørger for å teste at oppspinning av containere skjer feilfritt og uten problem. Den er delt opp i følgende steg:
 
-Både frontend og backend bruker C++-koden under `shared/` for å håndtere CRDT-logikken likt. Frontenden bruker denne koden via WebAssembly, mens backenden kompilerer den direkte inn i serveren.
+**1:**
+    kloner repositoriet til runneren på samme måte som for `backend-ci.yaml`
 
-### Frontend
+**2:**
+    setter opp Docker Buildx. Dette gjøres ved å aktivere et utvidet Docker-byggmiljø som støtter mer avanserte build funksjoner.
 
-Vi har frontend under `frontend/` i roten av prosjektet.
-Vi kjører frontenden med `frontend/Dockerfile`.
-Frontenden bruker Vue og bygger CRDT WebAssembly fra delt C++-kode under Docker-builden.
+**3:**
+    bygger backend Docker-imaget. Dette gjøres ved å kjøre Dockerfilen for backend og lagre imaget lokalt på runneren.
 
-### Backend
+**4:**
+    bygger frontend Docker-imaget. Gjøres på samme måte som backend, men med Dockerfilen for frontend.
 
-Vi har backend under `backend/` i roten av prosjektet.
-Vi kjører backenden med `backend/Dockerfile`.
-Backenden bygges med CMake og bruker delt CRDT/protokoll/server-kode fra `shared/`.
+**5:**
+    verifiserer at WASM-filene ble produsert under bygget. Dette gjøres ved å starte frontend-imaget og sjekke at de forventede filene faktisk finnes.
+
+**6:**
+    starter alle containere. Dette gjøres ved å kjøre `docker compose up -d` som spinner opp både frontend og backend i bakgrunnen.
+
+**7:**
+    venter på at containerne er klare. Dette gjøres ved å gi dem noen sekunder før testene starter, slik at portene rekker å bli tilgjengelige.
+
+**8:**
+    sjekker at ingen container krasjet ved oppstart. Dette gjøres ved å se etter feilstatuser i `docker compose ps`-outputen.
+
+**9:**
+    tester at frontend svarer på HTTP og at backend aksepterer WebSocket-tilkoblinger. Dette gjøres ved å sende forespørsler mot begge endepunkter og verifisere at de svarer som forventet.
+
+**10:**
+    dumper container-logger dersom noe feilet. Dette gjøres automatisk kun ved feil, slik at man enkelt kan se hva som gikk galt.
+
+**11:**
+    river ned alle containere. Dette gjøres alltid til slutt, uavhengig av om workflowen lyktes eller ikke.
 
 ## AsyncAPI
 
@@ -189,3 +379,10 @@ Se logger på backend med:
 ```bash 
 docker compose logs backend
 ```
+
+## Kilder
+
+CRDT-algoritmene er implementert fra bunnen basert på følgende kilder:
+
+- Kleppmann, M. (2020). *CRDTs: The Hard Parts*. [Foredrag på YouTube](https://www.youtube.com/watch?v=x7drE24geUw).
+
