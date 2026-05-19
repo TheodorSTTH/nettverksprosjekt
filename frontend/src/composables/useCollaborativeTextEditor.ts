@@ -100,6 +100,9 @@ const defaultTitle = 'Untitled'
 const defaultSelection: TextSelection = { start: 0, end: 0 }
 const cursorUpdateDelayMs = 100
 const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+const PENDING_OPS_STORAGE_KEY = 'cookiedoc:pendingOps:v1'
+const reconnectInitialDelayMs = 1000
+const reconnectMaxDelayMs = 15000
 
 // Random fallback peer id used for local LWW writes until the server assigns
 // one via `assign_peer_id`. Once assigned, the LWW register's peer id is
@@ -197,6 +200,7 @@ export function useCollaborativeTextEditor() {
   const editorText = ref(defaultText)
   const serverUrl = ref('ws://localhost:3030/ws')
   const socketState = ref<SocketState>('disconnected')
+  const isManuallyOffline = ref(false)
   const statusMessage = ref('Loading CRDT WebAssembly')
   const hasUnsavedChanges = ref(false)
   const lastSavedAt = ref<string | null>(null)
@@ -218,14 +222,39 @@ export function useCollaborativeTextEditor() {
 
   const history = ref<string[]>([defaultText])
   const historyIndex = ref(0)
+  const pendingOps = ref<Record<string, unknown>[]>(loadPendingOps())
   let selectionRestoreRevision = 0
   let cursorUpdateTimer: ReturnType<typeof setTimeout> | null = null
   let lastSentCursorUpdate = ''
+  let reconnectAttempt = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   let socket: WebSocket | null = null
   let engine: CrdtEngine | null = null
   let isApplyingHistory = false
   let isDestroyed = false
+
+  function loadPendingOps(): Record<string, unknown>[] {
+    try {
+      const raw = window.localStorage.getItem(PENDING_OPS_STORAGE_KEY)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+
+  function persistPendingOps() {
+    try {
+      window.localStorage.setItem(
+        PENDING_OPS_STORAGE_KEY,
+        JSON.stringify(pendingOps.value),
+      )
+    } catch {
+      // Quota exceeded or private mode — best effort only.
+    }
+  }
 
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
@@ -298,15 +327,55 @@ export function useCollaborativeTextEditor() {
 
   function sendToServer(payload: Record<string, unknown>) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
+      // Cursor updates are ephemeral; replaying a stale position after
+      // reconnect makes no sense, so we drop them. Everything else queues.
+      if (payload.type !== 'cursor_update') {
+        pendingOps.value.push(payload)
+        persistPendingOps()
+        statusMessage.value =
+          `Editing offline; ${pendingOps.value.length} change(s) queued`
+      }
       hasUnsavedChanges.value = true
-      statusMessage.value = 'Editing locally; reconnect to sync'
       return false
     }
 
     socket.send(JSON.stringify(payload))
     lastSavedAt.value = nowLabel()
-    hasUnsavedChanges.value = false
+    hasUnsavedChanges.value = pendingOps.value.length > 0
     return true
+  }
+
+  function flushPendingOps() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    if (pendingOps.value.length === 0) return
+
+    // Collapse counter_update messages — server's G-Counter merge keeps the
+    // max per peer, so replaying every intermediate value is redundant.
+    const collapsed: Record<string, unknown>[] = []
+    let cookieIndex = -1
+    for (const op of pendingOps.value) {
+      if (op.type === 'counter_update') {
+        if (cookieIndex >= 0) {
+          collapsed[cookieIndex] = op
+        } else {
+          collapsed.push(op)
+          cookieIndex = collapsed.length - 1
+        }
+      } else {
+        collapsed.push(op)
+      }
+    }
+
+    for (const op of collapsed) {
+      socket.send(JSON.stringify(op))
+    }
+
+    const count = pendingOps.value.length
+    pendingOps.value = []
+    persistPendingOps()
+    hasUnsavedChanges.value = false
+    lastSavedAt.value = nowLabel()
+    statusMessage.value = `Reconnected; synced ${count} offline change(s)`
   }
 
   function requestFullSync() {
@@ -603,11 +672,6 @@ export function useCollaborativeTextEditor() {
   }
 
   function clickCookie() {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      statusMessage.value = 'Reconnect to count cookies'
-      return
-    }
-
     const nextCount = cookieOwnCount.value + 1
     cookieOwnCount.value = nextCount
     sendToServer({
@@ -615,6 +679,9 @@ export function useCollaborativeTextEditor() {
       counter: 'cookies',
       count: nextCount,
     })
+    if (isConnected.value) {
+      statusMessage.value = `Cookies: ${cookieDisplayCount.value}`
+    }
   }
 
   function undoEdit() {
@@ -673,14 +740,44 @@ export function useCollaborativeTextEditor() {
     }
 
     const cursorAnchor = captureCursorAnchor()
-    engine.loadSnapshot(message.nodes)
+
+    // If the local engine already has state (typical on reconnect or when
+    // offline edits exist), do NOT call loadSnapshot — it would wipe local
+    // state. Instead, replay each snapshot node as a remote op. The CRDT is
+    // idempotent: known IDs are ignored, unknown ones get integrated. This
+    // converges both replicas without flicker or data loss.
+    const hasLocalState =
+      engine.visibleIds().length > 0 || pendingOps.value.length > 0
+
+    if (hasLocalState) {
+      for (const node of message.nodes) {
+        engine.applyRemoteInsert({
+          type: 'remote_insert',
+          value: node.value,
+          char: node.value,
+          id: node.id,
+          parent_id: node.parent_id,
+        })
+        if (node.tombstoned) {
+          engine.applyRemoteDelete({
+            type: 'remote_delete',
+            target_id: node.id,
+          })
+        }
+      }
+    } else {
+      engine.loadSnapshot(message.nodes)
+    }
+
     editorText.value = engine.toString()
     normalizeRemoteCursorAnchors()
     restoreCursorFromAnchor(cursorAnchor)
     recordHistory(editorText.value)
-    hasUnsavedChanges.value = false
+    hasUnsavedChanges.value = pendingOps.value.length > 0
     lastSavedAt.value = nowLabel()
-    statusMessage.value = 'Updated from server snapshot'
+    statusMessage.value = hasLocalState
+      ? 'Merged server snapshot with local state'
+      : 'Updated from server snapshot'
 
     if (message.title) {
       applyRemoteTitle(
@@ -738,12 +835,6 @@ export function useCollaborativeTextEditor() {
     cookieServerCount.value = Math.max(0, message.value)
     cookieConfirmedOwnCount.value = Math.max(0, message.own_count)
     cookieOwnCount.value = Math.max(cookieOwnCount.value, cookieConfirmedOwnCount.value)
-  }
-
-  function resetCookieCounterState() {
-    cookieServerCount.value = 0
-    cookieConfirmedOwnCount.value = 0
-    cookieOwnCount.value = 0
   }
 
   function handleServerMessage(event: MessageEvent<string>) {
@@ -804,7 +895,42 @@ export function useCollaborativeTextEditor() {
     }
   }
 
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  function scheduleReconnect() {
+    if (isDestroyed) return
+    if (isManuallyOffline.value) {
+      statusMessage.value =
+        'Manually offline' +
+        (pendingOps.value.length > 0
+          ? ` — ${pendingOps.value.length} change(s) queued`
+          : '')
+      return
+    }
+    clearReconnectTimer()
+    const delay = Math.min(
+      reconnectInitialDelayMs * 2 ** reconnectAttempt,
+      reconnectMaxDelayMs,
+    )
+    reconnectAttempt += 1
+    statusMessage.value =
+      `Disconnected; retrying in ${Math.round(delay / 1000)}s` +
+      (pendingOps.value.length > 0
+        ? ` (${pendingOps.value.length} queued)`
+        : '')
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null
+      void connectSocket()
+    }, delay)
+  }
+
   function disconnectSocket() {
+    clearReconnectTimer()
     if (!socket) {
       return
     }
@@ -825,8 +951,6 @@ export function useCollaborativeTextEditor() {
     }
 
     disconnectSocket()
-    resetCookieCounterState()
-    titleRegister.reset(defaultTitle)
     socketState.value = 'connecting'
     statusMessage.value = 'Connecting to server'
 
@@ -834,9 +958,8 @@ export function useCollaborativeTextEditor() {
       socket = new WebSocket(serverUrl.value)
     } catch {
       socketState.value = 'disconnected'
-      resetCookieCounterState()
-      titleRegister.reset(defaultTitle)
       statusMessage.value = 'Invalid server URL'
+      scheduleReconnect()
       return
     }
 
@@ -844,27 +967,45 @@ export function useCollaborativeTextEditor() {
       socketState.value = 'connected'
       statusMessage.value = 'Connected to server'
       lastSentCursorUpdate = ''
-      requestFullSync()
+      reconnectAttempt = 0
+      // Send queued offline ops first. The server's open handler will push a
+      // sync_state right after; applySyncState's merge branch handles the
+      // overlap so nothing is lost.
+      flushPendingOps()
       scheduleCursorUpdate()
     }
 
     socket.onmessage = handleServerMessage
 
     socket.onerror = () => {
-      socketState.value = 'disconnected'
-      resetCookieCounterState()
-      titleRegister.reset(defaultTitle)
+      // onerror is always followed by onclose; defer reconnect scheduling
+      // to onclose so we don't double-schedule.
       statusMessage.value = 'Could not reach server'
     }
 
     socket.onclose = () => {
       socketState.value = 'disconnected'
-      statusMessage.value = 'Disconnected'
       socket = null
       remoteCursorAnchors.value = {}
-      resetCookieCounterState()
-      titleRegister.reset(defaultTitle)
       lastSentCursorUpdate = ''
+      scheduleReconnect()
+    }
+  }
+
+  function toggleManualOffline() {
+    if (isManuallyOffline.value) {
+      isManuallyOffline.value = false
+      reconnectAttempt = 0
+      statusMessage.value = 'Reconnecting'
+      void connectSocket()
+    } else {
+      isManuallyOffline.value = true
+      clearReconnectTimer()
+      disconnectSocket()
+      socketState.value = 'disconnected'
+      remoteCursorAnchors.value = {}
+      lastSentCursorUpdate = ''
+      statusMessage.value = 'Manually offline — edits will queue locally'
     }
   }
 
@@ -926,6 +1067,7 @@ export function useCollaborativeTextEditor() {
     cookieServerCount,
     connectionLabel,
     editorText,
+    isManuallyOffline,
     remoteCursors,
     saveDocument,
     saveLabel,
@@ -937,6 +1079,7 @@ export function useCollaborativeTextEditor() {
     clickCookie,
     connectSocket,
     redoEdit,
+    toggleManualOffline,
     undoEdit,
     updateSelection,
     updateText,

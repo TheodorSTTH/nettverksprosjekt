@@ -24,7 +24,12 @@ const editor = useCollaborativeTextEditor()
           @undo="editor.undoEdit"
         />
 
-        <ServerSettings v-model:server-url="editor.serverUrl.value" @reconnect="editor.connectSocket" />
+        <ServerSettings
+          v-model:server-url="editor.serverUrl.value"
+          :is-manually-offline="editor.isManuallyOffline.value"
+          @reconnect="editor.connectSocket"
+          @toggle-offline="editor.toggleManualOffline"
+        />
 
       <DocumentTitle :model-value="editor.title.value" @commit="editor.commitTitle" />
 
@@ -43,7 +48,7 @@ const editor = useCollaborativeTextEditor()
       </section>
 
       <CookieClickerPanel
-        :disabled="editor.socketState.value !== 'connected'"
+        :disabled="false"
         :total="editor.cookieDisplayCount.value"
         @click="editor.clickCookie"
       />
