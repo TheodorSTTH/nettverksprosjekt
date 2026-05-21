@@ -190,7 +190,7 @@ Testene er delt mellom `shared/tests/` (ren CRDT-logikk) og `backend/tests/` (se
 
 - **`test_rga.cpp`**: dekker RGA, både basis-operasjoner, edge cases (sletting av første/siste tegn, innsetting etter tombstones, Unicode), idempotens (samme operasjon to ganger endrer ikke tilstanden), kommutativitet (A før B gir samme resultat som B før A), og konvergens (concurrent inserts på samme parent gir samme resultat på alle replikaer uavhengig av ankomstrekkefølge).
 - **`test_lww_register.cpp`**: dekker LWWRegister, inkludert tiebreaker på `peer_id` når tidsstempler er like, og at Lamport-klokken oppdateres riktig ved fjern-skriving.
-- **`test_g_counter.cpp`**: dekker GCounter, med vekt på at merge tar maks per peer, og at operasjonen er kommutativ, idempotent og assosiativ.
+- **`test_g_counter.cpp`**: dekker GCounter, med vekt på at merge tar maks per stabil replika, og at operasjonen er kommutativ, idempotent og assosiativ.
 - **`test_document_state.cpp`**: dekker server-laget. Tester at insert med ukjent parent avvises, at snapshot lagres og lastes korrekt (inkludert tombstones og Unicode), og at cookie-telleren persisteres på tvers av omstart.
 - **`test_protocol.cpp`**: dekker JSON-serialisering. Round-trip-tester for alle meldingstyper, validering av innkommende meldinger, og avvisning av malformerte meldinger.
 
@@ -399,4 +399,3 @@ docker compose logs backend
 CRDT-algoritmene er implementert fra bunnen basert på følgende kilder:
 
 - Kleppmann, M. (2020). *CRDTs: The Hard Parts*. [Foredrag på YouTube](https://www.youtube.com/watch?v=x7drE24geUw).
-

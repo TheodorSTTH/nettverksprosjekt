@@ -10,9 +10,11 @@ info:
     Dette dokumentet er skrevet fra klientens perspektiv:
     `publish` er meldinger klienten sender til serveren, og `subscribe` er meldinger klienten mottar fra serveren.
 
-    Serveren grupperer og bruker i dag klientmeldinger for innsetting, sletting, markør og teller asynkront med en bevisst forsinkelse.
+    Serveren grupperer og bruker i dag klientmeldinger for innsetting, sletting, markør, tittel og teller asynkront med en bevisst forsinkelse.
   license:
     name: UNLICENSED
+  contact:
+    name: CookieDoc project group
 tags:
   - name: websocket
     description: Toveis WebSocket-protokoll brukt av CookieDoc-klienter.
@@ -34,9 +36,12 @@ channels:
       message:
         oneOf:
           - $ref: '#/components/messages/SyncRequestMessage'
+          - $ref: '#/components/messages/SaveRequestMessage'
           - $ref: '#/components/messages/InsertMessage'
           - $ref: '#/components/messages/DeleteMessage'
           - $ref: '#/components/messages/CursorUpdateMessage'
+          - $ref: '#/components/messages/ClientSetTitleMessage'
+          - $ref: '#/components/messages/CounterStateRequestMessage'
           - $ref: '#/components/messages/CounterUpdateMessage'
     subscribe:
       summary: Klienten mottar snapshots, tilstandsendringer fra andre brukere, eksterne redigeringer, tellerstatus og feil.
@@ -49,6 +54,7 @@ channels:
           - $ref: '#/components/messages/RemoteDeleteMessage'
           - $ref: '#/components/messages/RemoteCursorMessage'
           - $ref: '#/components/messages/PeerLeftMessage'
+          - $ref: '#/components/messages/ServerSetTitleMessage'
           - $ref: '#/components/messages/CounterStateMessage'
           - $ref: '#/components/messages/ErrorMessage'
 components:
@@ -57,9 +63,16 @@ components:
       messageId: syncRequest
       name: SyncRequestMessage
       title: Synkroniseringsforespørsel
-      summary: Ber om siste snapshot av dokumentet og siste tilstand for cookie-telleren.
+      summary: Ber umiddelbart om siste snapshot av dokumentet.
       payload:
         $ref: '#/components/schemas/SyncRequestPayload'
+    SaveRequestMessage:
+      messageId: saveRequest
+      name: SaveRequestMessage
+      title: Lagre etter køede oppdateringer
+      summary: Ber serveren sende autoritativ sync_state etter tidligere køede operasjoner er behandlet.
+      payload:
+        $ref: '#/components/schemas/SaveRequestPayload'
     InsertMessage:
       messageId: insert
       name: InsertMessage
@@ -85,9 +98,23 @@ components:
       messageId: counterUpdate
       name: CounterUpdateMessage
       title: Oppdatering av cookie-teller
-      summary: Sender klientens siste antall cookies til den delte telleren.
+      summary: Sender klientens absolutte cookie-antall for en stabil G-Counter-replika.
       payload:
         $ref: '#/components/schemas/CounterUpdatePayload'
+    CounterStateRequestMessage:
+      messageId: counterStateRequest
+      name: CounterStateRequestMessage
+      title: Forespørsel om cookie-teller
+      summary: Ber om total cookie-verdi og bekreftet slot for klientens stabile replica_id.
+      payload:
+        $ref: '#/components/schemas/CounterStateRequestPayload'
+    ClientSetTitleMessage:
+      messageId: clientSetTitle
+      name: ClientSetTitleMessage
+      title: Lokal titteloppdatering
+      summary: Sender en LWWRegister-operasjon for dokumenttittelen til serveren.
+      payload:
+        $ref: '#/components/schemas/SetTitlePayload'
     AssignPeerIdMessage:
       messageId: assignPeerId
       name: AssignPeerIdMessage
@@ -134,9 +161,16 @@ components:
       messageId: counterState
       name: CounterStateMessage
       title: Tilstand for cookie-teller
-      summary: Sendes av serveren for å rapportere total verdi og bekreftet bidrag for gjeldende peer.
+      summary: Sendes av serveren for å rapportere total verdi og bekreftet bidrag for gjeldende stabile replika.
       payload:
         $ref: '#/components/schemas/CounterStatePayload'
+    ServerSetTitleMessage:
+      messageId: serverSetTitle
+      name: ServerSetTitleMessage
+      title: Autoritativ titteloppdatering
+      summary: Sendes av serveren med vinnende LWWRegister-verdi for dokumenttittelen.
+      payload:
+        $ref: '#/components/schemas/SetTitlePayload'
     ErrorMessage:
       messageId: error
       name: ErrorMessage
@@ -161,13 +195,22 @@ components:
       examples:
         - peer_id: 4
           sequence: 17
+    ReplicaId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Stabil klient/replika-ID brukt som G-Counter-komponentnøkkel.
+      examples:
+        - cookie-client-a
+        - cookie-8a5f1c0b-2c4b-4c28-9c80-4c8cc6d02a42
     CookieCounterSnapshot:
       type: object
       additionalProperties: false
       properties:
         counts:
           type: object
-          description: Cookie-antall per peer lagret av serveren som en GCounter.
+          description: Cookie-antall per stabil replika lagret av serveren som en GCounter.
           additionalProperties:
             type: integer
             minimum: 0
@@ -175,8 +218,8 @@ components:
         - counts
       examples:
         - counts:
-            '1': 8
-            '2': 5
+            cookie-client-a: 8
+            cookie-client-b: 5
     RgaNode:
       type: object
       additionalProperties: false
@@ -196,6 +239,25 @@ components:
         - id
         - parent_id
         - tombstoned
+    TitleState:
+      type: object
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+          description: Dokumenttittel lagret i LWWRegister.
+        timestamp:
+          type: integer
+          minimum: 0
+          description: Lamport-tidsstempel for vinnende tittelverdi.
+        peer_id:
+          type: integer
+          minimum: 0
+          description: Peer-ID som brukes som deterministisk tiebreaker ved lik timestamp.
+      required:
+        - value
+        - timestamp
+        - peer_id
     SyncRequestPayload:
       type: object
       additionalProperties: false
@@ -207,6 +269,17 @@ components:
         - type
       examples:
         - type: sync_request
+    SaveRequestPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: save_request
+      required:
+        - type
+      examples:
+        - type: save_request
     InsertPayload:
       type: object
       additionalProperties: false
@@ -380,6 +453,54 @@ components:
       examples:
         - type: peer_left
           peer_id: 2
+    SetTitlePayload:
+      type: object
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: set_title
+        value:
+          type: string
+          description: Ny full dokumenttittel.
+        timestamp:
+          type: integer
+          minimum: 0
+          description: Lamport-tidsstempel for LWWRegister-operasjonen.
+        peer_id:
+          type: integer
+          minimum: 1
+          description: Peer-ID som brukes som deterministisk tiebreaker ved lik timestamp.
+      required:
+        - type
+        - value
+        - timestamp
+        - peer_id
+      examples:
+        - type: set_title
+          value: Shared text file
+          timestamp: 12
+          peer_id: 2
+    CounterStateRequestPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: counter_state_request
+        counter:
+          type: string
+          const: cookies
+        replica_id:
+          $ref: '#/components/schemas/ReplicaId'
+      required:
+        - type
+        - counter
+        - replica_id
+      examples:
+        - type: counter_state_request
+          counter: cookies
+          replica_id: cookie-client-a
     CounterUpdatePayload:
       type: object
       additionalProperties: false
@@ -390,17 +511,21 @@ components:
         counter:
           type: string
           const: cookies
+        replica_id:
+          $ref: '#/components/schemas/ReplicaId'
         count:
           type: integer
           minimum: 0
-          description: Klientens siste lokale cookie-antall for denne peeren.
+          description: Klientens absolutte lokale cookie-antall for denne stabile replikaen.
       required:
         - type
         - counter
+        - replica_id
         - count
       examples:
         - type: counter_update
           counter: cookies
+          replica_id: cookie-client-a
           count: 9
     CounterStatePayload:
       type: object
@@ -412,6 +537,8 @@ components:
         counter:
           type: string
           const: cookies
+        replica_id:
+          $ref: '#/components/schemas/ReplicaId'
         value:
           type: integer
           minimum: 0
@@ -419,15 +546,17 @@ components:
         own_count:
           type: integer
           minimum: 0
-          description: Serverbekreftet verdi som den tilkoblede peeren selv har bidratt med.
+          description: Serverbekreftet verdi som den stabile replikaen selv har bidratt med.
       required:
         - type
         - counter
+        - replica_id
         - value
         - own_count
       examples:
         - type: counter_state
           counter: cookies
+          replica_id: cookie-client-a
           value: 13
           own_count: 8
     AssignPeerIdPayload:
@@ -459,12 +588,15 @@ components:
             $ref: '#/components/schemas/RgaNode'
         visible_text:
           type: string
+        title:
+          $ref: '#/components/schemas/TitleState'
         cookie_counter:
           $ref: '#/components/schemas/CookieCounterSnapshot'
       required:
         - type
         - nodes
         - visible_text
+        - title
         - cookie_counter
       examples:
         - type: sync_state
@@ -486,10 +618,14 @@ components:
                 sequence: 1
               tombstoned: false
           visible_text: Hi
+          title:
+            value: Shared text file
+            timestamp: 4
+            peer_id: 1
           cookie_counter:
             counts:
-              '1': 8
-              '2': 5
+              cookie-client-a: 8
+              cookie-client-b: 5
     ErrorPayload:
       type: object
       additionalProperties: false

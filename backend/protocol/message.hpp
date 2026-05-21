@@ -54,7 +54,7 @@ struct CursorUpdate {
  * @brief Incoming update for a named counter (currently only "cookies").
  *
  * The count is interpreted as the sender's current absolute total, not as
- * a delta. The server uses G-Counter merge semantics (max per peer) to
+ * a delta. The server uses G-Counter merge semantics (max per stable replica) to
  * integrate it.
  */
 struct CounterUpdate {
@@ -142,7 +142,7 @@ nlohmann::json serialize_peer_left(std::uint32_t peer_id);
 /**
  * @brief Build a counter_state message for one recipient.
  * @param counter     Counter name (currently only "cookies").
- * @param value       Total value across all peers.
+ * @param value       Total value across all stable replica slots.
  * @param own_count   The recipient's own slot in the G-Counter, used by the
  *                    client to reconcile its local optimistic count with the
  *                    server's confirmed total.
