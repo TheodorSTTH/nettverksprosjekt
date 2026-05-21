@@ -89,9 +89,13 @@ struct RGANode {
 
 /**
  * @brief Operation describing an insert, returned by local_insert and broadcast to peers.
+ *
+ * The operation is self-contained: it carries the value, the new node ID,
+ * and the parent ID that defines the insertion position. Receivers do not
+ * need the sender's numeric text index.
  */
 struct InsertOp {
-    std::string value;  ///< Character to insert.
+    std::string value;  ///< Grapheme cluster to insert, encoded as UTF-8.
     RGAID id;           ///< Unique ID assigned to the new node.
     RGAID parent_id;    ///< ID of the node to insert after.
 
@@ -106,6 +110,9 @@ struct InsertOp {
 
 /**
  * @brief Operation describing a delete, returned by local_delete and broadcast to peers.
+ *
+ * Deletes never remove nodes from the RGA structure. They only tombstone the
+ * target node, preserving it as a possible parent for later-arriving inserts.
  */
 struct DeleteOp {
     RGAID target_id;  ///< ID of the node to tombstone.
@@ -137,8 +144,14 @@ public:
     explicit RGA(std::uint32_t peer_id);
 
     /**
-     * @brief Insert a character (or grapheme cluster) locally.
-     * @param value      The character to insert.
+     * @brief Insert a grapheme cluster locally.
+     *
+     * The frontend segments user text into grapheme clusters before calling
+     * this method, so Norwegian letters, combining characters and emoji can
+     * each be represented as one CRDT node even when they contain multiple
+     * UTF-8 bytes.
+     *
+     * @param value      The grapheme cluster to insert. Must not be empty.
      * @param parent_id  ID of the node to insert after. Use RGAID::root() to insert at the start.
      * @return Operation describing the insert. Must be broadcast to peers verbatim.
      */
@@ -171,11 +184,17 @@ public:
 
     /**
      * @brief Produce the visible text by walking the node list and skipping tombstones.
+     *
+     * The result concatenates UTF-8 grapheme payloads in the deterministic
+     * RGA order. Tombstoned nodes remain in nodes() but are not visible here.
      */
     std::string to_string() const;
 
     /**
      * @brief Read the full node list, including tombstones, for use in sync_state messages.
+     *
+     * Exposing tombstones is intentional: clients need the complete RGA
+     * structure to accept operations that reference deleted parents.
      */
     const std::vector<RGANode>& nodes() const noexcept { return nodes_; }
 

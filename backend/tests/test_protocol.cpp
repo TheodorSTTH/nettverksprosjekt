@@ -103,18 +103,34 @@ TEST_CASE("Counter messages validate and serialize", "[protocol]") {
     const auto update = nlohmann::json{
         {"type", "counter_update"},
         {"counter", "cookies"},
+        {"replica_id", "cookie-client-a"},
         {"count", 12},
     };
     const auto parsed = protocol::parse_counter_update(update);
 
     REQUIRE(parsed.has_value());
     REQUIRE(parsed->counter == "cookies");
+    REQUIRE(parsed->replica_id == "cookie-client-a");
     REQUIRE(parsed->count == 12);
     REQUIRE(protocol::validate_client_message(update).ok);
 
-    const auto state = protocol::serialize_counter_state("cookies", 42, 12);
+    const auto request = nlohmann::json{
+        {"type", "counter_state_request"},
+        {"counter", "cookies"},
+        {"replica_id", "cookie-client-a"},
+    };
+    const auto parsed_request = protocol::parse_counter_state_request(request);
+
+    REQUIRE(parsed_request.has_value());
+    REQUIRE(parsed_request->counter == "cookies");
+    REQUIRE(parsed_request->replica_id == "cookie-client-a");
+    REQUIRE(protocol::message_type(request) == protocol::MessageType::CounterStateRequest);
+    REQUIRE(protocol::validate_client_message(request).ok);
+
+    const auto state = protocol::serialize_counter_state("cookies", 42, 12, "cookie-client-a");
     REQUIRE(state.at("type") == "counter_state");
     REQUIRE(state.at("counter") == "cookies");
+    REQUIRE(state.at("replica_id") == "cookie-client-a");
     REQUIRE(state.at("value") == 42);
     REQUIRE(state.at("own_count") == 12);
 }
@@ -154,12 +170,26 @@ TEST_CASE("Malformed client messages are rejected", "[protocol]") {
         {"type", "counter_update"},
         {"counter", "cookies"},
         {"count", -1},
+        {"replica_id", "cookie-client-a"},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_update"},
+        {"counter", "cookies"},
+        {"count", 1},
     }).ok);
 
     REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
         {"type", "counter_update"},
         {"counter", "other"},
         {"count", 1},
+        {"replica_id", "cookie-client-a"},
+    }).ok);
+
+    REQUIRE_FALSE(protocol::validate_client_message(nlohmann::json{
+        {"type", "counter_state_request"},
+        {"counter", "cookies"},
+        {"replica_id", "bad replica id"},
     }).ok);
 
     REQUIRE(protocol::validate_client_message(nlohmann::json{

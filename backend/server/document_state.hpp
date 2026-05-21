@@ -92,10 +92,10 @@ public:
     DeleteResult apply_delete(const crdt::DeleteOp& operation);
 
     /**
-     * @brief Merge a peer's cookie count using G-Counter semantics (max per peer).
-     * @return true if the peer's slot was updated, false if the incoming count was not larger.
+     * @brief Merge a replica's cookie count using G-Counter semantics (max per replica).
+     * @return true if the replica's slot was updated, false if the incoming count was not larger.
      */
-    bool apply_cookie_count(std::uint32_t peer_id, std::uint64_t count);
+    bool apply_cookie_count(const std::string& replica_id, std::uint64_t count);
 
     /**
      * @brief Apply a remote title write using LWW semantics.
@@ -109,9 +109,9 @@ public:
 
     /**
      * @brief Produce the counter_state message for a specific recipient.
-     * @param peer_id  Recipient peer ID, used to populate the own_count field.
+     * @param replica_id  Stable replica ID, used to populate the own_count field.
      */
-    nlohmann::json cookie_counter_state(std::uint32_t peer_id) const;
+    nlohmann::json cookie_counter_state(const std::string& replica_id) const;
 
     /**
      * @brief Produce the current title_state message.

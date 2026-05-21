@@ -9,6 +9,9 @@ bool is_newer(const LWWMetadata& candidate, const LWWMetadata& current) {
     if (candidate.timestamp != current.timestamp) {
         return candidate.timestamp > current.timestamp;
     }
+
+    // Equal Lamport timestamps mean the writes are concurrent from this
+    // register's perspective. peer_id gives every replica the same winner.
     return candidate.peer_id > current.peer_id;
 }
 
@@ -25,6 +28,8 @@ LWWOperation<T> LWWRegister<T>::set(T new_value) {
 
 template <typename T>
 void LWWRegister<T>::apply(const LWWOperation<T>& operation) {
+    // Observing happens even when the incoming value loses, so future local
+    // writes are causally after every remote timestamp this replica has seen.
     clock_.observe(operation.metadata.timestamp);
 
     if (is_newer(operation.metadata, metadata_)) {

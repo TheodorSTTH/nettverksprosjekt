@@ -11,6 +11,8 @@ RGAID RGA::next_id() {
 }
 
 void RGA::observe(std::uint32_t remote_sequence) noexcept {
+    // Keep the local sequence ahead of every remote sequence we have seen so
+    // future local IDs remain unique and monotonically increasing.
     if (remote_sequence > sequence_) {
         sequence_ = remote_sequence;
     }
@@ -29,6 +31,8 @@ InsertOp RGA::local_insert(char value, RGAID parent_id) {
 DeleteOp RGA::local_delete(RGAID target_id) {
     auto it = index_of_.find(target_id);
     if (it != index_of_.end()) {
+        // Deletion is represented as a tombstone. The node stays addressable
+        // so late inserts that reference it as parent can still be integrated.
         nodes_[it->second].tombstoned = true;
     }
     return DeleteOp{target_id};
@@ -51,6 +55,7 @@ void RGA::apply_remote(const InsertOp& op) {
 void RGA::apply_remote(const DeleteOp& op) {
     auto it = index_of_.find(op.target_id);
     if (it != index_of_.end()) {
+        // Idempotency: setting tombstoned to true repeatedly is harmless.
         nodes_[it->second].tombstoned = true;
     }
 }
