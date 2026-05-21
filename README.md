@@ -65,7 +65,7 @@ sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
 
 ### Dokumentredigering
 
-Flere brukere kan redigere samme tekst samtidig. Dette innebærer både sletting og skriving hvor som helst i dokumentet. Brukerne kan også se hvor andre brukere har markøren sin. Markørposisjon er **ikke** en CRDT — den kringkastes ephemeralt mellom klienter fordi den ikke trenger å konvergere, kun reflektere siste kjente posisjon. Hver server håndterer i dag ett dokument.
+Flere brukere kan skrive og slette i samme dokument samtidig. Du kan også se hvor de andre har markøren sin. Markøren er ikke en del av CRDT-en. Den sendes bare mellom klientene som en kort melding, og lagres ikke. Grunnen er at en markør bare skal vise hvor en bruker er akkurat nå — den trenger ikke huskes over tid. Hver server håndterer ett dokument om gangen.
 
 ### Offline-redigering
 
