@@ -5,6 +5,11 @@
 [![Docker CI](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/docker-ci.yml/badge.svg)](https://github.com/TheodorSTTH/nettverksprosjekt/actions/workflows/docker-ci.yml)
 
 
+**Deltakere**:
+- Benjamin Kvello-Hansen
+- Theodor Strøm Thrane
+- Mateja Vasic
+
 Nettverksprosjekt - conflict-free replicated data types.
 ---
 CookieDoc er et sanntidsverktøy for samskriving og delt cookie-teller som lar flere anonyme brukere samarbeide over lokalt nettverk. Prosjektet bruker CRDT-er (Conflict-free Replicated Data Types) for å la klienter gjøre endringer lokalt og samkjøre dem automatisk når forbindelsen kommer tilbake, uten at noen sentral instans trenger å avgjøre hvem som "vant".
