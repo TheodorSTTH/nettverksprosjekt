@@ -15,14 +15,20 @@ En CRDT er en datastruktur som kan eksistere på flere enheter samtidig og allti
 
 ### Hosting
 
-Hver bruker hoster sin egen server som lagrer dokumentet. Andre brukere kan koble seg til ved å skrive inn WebSocket-lenken din (for eksempel `ws://10.22.172.80:3030/ws`) og deretter redigere det samme dokumentet. Brukere kan se tilkoblingsstatusen sin og bruke `Ctrl+Z` for å angre lokale endringer.
+Hver bruker hoster sin egen server som lagrer dokumentet. Andre brukere kan koble seg til ved å skrive inn WebSocket-lenken din (for eksempel `ws://10.22.172.80:3030/ws`) og deretter redigere det samme dokumentet. 
 
-**OBS!**
-dersom andre ikke får til å koble opp mot din kjørende server, kan dette skyldes browser-restriksjoner som ikke lar enheter koble seg til andres localhost lenker. Hvis dette problemet forekommer, må man tilgjengeligjøre localhost-addressen ved å kjøre følgende kommandoer: 
+OBS! Tilkobling fra andre maskiner
 
-##### som **administrator** i CMD (Windows):
+Hvis andre på samme nett ikke får koblet seg til din kjørende server, er det som regel ett av disse problemene:
 
-```cmd
+**WSL2 (Windows)**: Hvis du kjører Docker inne i WSL2, eksponeres ikke porten automatisk på Windows-vertens LAN-interface. Du må sette opp portforwarding fra Windows til WSL2 og åpne brannmuren.
+
+**Brannmur (alle plattformer)**: Operativsystemets brannmur kan blokkere innkommende tilkoblinger på portene 3030 og 8080.
+Kommandoene under løser begge. Kjør de som gjelder din plattform.
+
+Windows (WSL2 portforward + brannmur, kjør som administrator i CMD):
+
+```
 > netsh interface portproxy add v4tov4 listenport=3030 listenaddress=0.0.0.0 connectport=3030 connectaddress=127.0.0.1
 
 > netsh interface portproxy add v4tov4 listenport=8080 listenaddress=0.0.0.0 connectport=8080 connectaddress=127.0.0.1
