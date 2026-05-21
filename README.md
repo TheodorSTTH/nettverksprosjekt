@@ -68,7 +68,7 @@ Flere brukere kan trykke på den samme cookie clickeren samtidig, og telleren bl
 
 ### Setting av dokument tittel
 
-Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemmer den. Endringer blir altså ikke samkjørte.
+Flere brukere kan endre dokumenttittelen samtidig. I motsetning til selve teksten, som flettes tegn-for-tegn via RGA, er tittelen modellert som en LWW-Register. hele tittelen erstattes som en verdi, og ved samtidige endringer vinner skrivet med høyest Lamport-tidsstempel. Hvis to klienter setter tittelen i nøyaktig samme øyeblikk, brukes peer_id som deterministisk tiebreaker, slik at alle replikaer ender på samme verdi.
 
 ## Fremtidig arbeid & nåværende svakheter
 
@@ -92,7 +92,7 @@ Flere brukere kan endre tittel. Siste person som setter dokument tittel bestemme
 
 ### C++
 - `nlohmann/json`: Et header-only JSON-bibliotek for C++. Det brukes til å parse og serialisere meldinger og snapshots mellom klient og server.
-- `uSockets` og `uWebSockets`: Biblioteker for hendelsesdrevet nettverk og WebSocket-kommunikasjon i C++. De brukes til backend-serveren som tar imot og videresender CRDT-operasjoner. Vi valgte `uWebSockets` fremfor alternativer som `Boost.Beast` og `libwebsockets` fordi det har et minimalt og rett-på-sak API, håndterer HTTP-upgrade, framing og keepalive automatisk, og lar oss kjøre alle tilkoblinger på én event-loop uten egen trådhåndtering. Det passer godt til vårt use-case med få samtidige klienter og korte JSON-meldinger.
+- `uSockets` og `uWebSockets`: Biblioteker for hendelsesdrevet nettverk og WebSocket-kommunikasjon i C++. De brukes til backend-serveren som tar imot og videresender CRDT-operasjoner. Vi valgte `uWebSockets` fremfor alternativer som `Boost.Beast` og `libwebsockets` fordi det har et minimalt og rett-på-sak API, håndterer HTTP-upgrade, framing og keepalive automatisk, og lar oss kjøre alle tilkoblinger på en event-loop uten egen trådhåndtering. Det passer godt til vårt use-case med få samtidige klienter og korte JSON-meldinger.
 - `Catch2`: Et testrammeverk for C++. Det brukes til testing av CRDT-, protokoll- og dokumentlogikken.
 
 ### Frontend
