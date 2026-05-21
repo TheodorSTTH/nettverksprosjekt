@@ -45,14 +45,14 @@ public:
     /**
      * @brief The peer this clock belongs to.
      */
-    std::uint32_t peer_id() const {
+    std::uint32_t peer_id() const noexcept {
         return peer_id_;
     }
 
     /**
      * @brief Current timestamp without advancing the clock.
      */
-    std::uint64_t timestamp() const {
+    std::uint64_t timestamp() const noexcept {
         return timestamp_;
     }
 
@@ -61,4 +61,4 @@ private:
     std::uint64_t timestamp_ = 0;
 };
 
-}
+}  // namespace crdt
