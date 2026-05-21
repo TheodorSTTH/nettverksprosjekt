@@ -1,0 +1,20 @@
+services:
+  frontend:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8080:8080"
+  backend:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "3030:3030"
+    volumes:
+      - backend-data:/app/data
+
+volumes:
+  backend-data:

@@ -1,0 +1,14 @@
+{
+  "name": "cookiedoc-asyncapi",
+  "private": true,
+  "scripts": {
+    "asyncapi:validate": "asyncapi validate asyncapi.yaml",
+    "asyncapi:generate": "mkdir -p build/asyncapi && asyncapi generate fromTemplate asyncapi.yaml @asyncapi/html-template -o build/asyncapi --force-write --use-new-generator",
+    "asyncapi:preview": "npm run asyncapi:generate && http-server build/asyncapi -p 3210 -a 0.0.0.0 -c-1"
+  },
+  "devDependencies": {
+    "@asyncapi/cli": "^3.4.0",
+    "@asyncapi/html-template": "3.5.6",
+    "http-server": "^14.1.1"
+  }
+}
