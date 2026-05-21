@@ -403,4 +403,35 @@ docker compose logs backend
 
 CRDT-algoritmene er implementert fra bunnen basert på følgende kilder:
 
-- Kleppmann, M. (2020). *CRDTs: The Hard Parts*. [Foredrag på YouTube](https://www.youtube.com/watch?v=x7drE24geUw).
+- Kleppmann, M. (2020). *CRDTs: The Hard Parts*. Foredrag, tilgjengelig på 
+  [YouTube](https://www.youtube.com/watch?v=x7drE24geUw). 
+  Hovedkilde for designvalg rundt RGA, tombstones og tie-breaking.
+
+- Kleppmann, M. (2023). *"New algorithms for collaborative text editing"*. 
+  Foredrag på Strange Loop 2023, tilgjengelig på 
+  [YouTube](https://www.youtube.com/watch?v=Mr0a5KyD6BU). 
+  Oppdatert supplement til "The Hard Parts" med nyere utvikling innen kollaborativ tekstredigering.
+
+- Wikipedia: *[Conflict-free replicated data type](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type)*.
+  Brukt som oversiktskilde for klassifisering av CRDT-er og merge-semantikk.
+
+- Sypytkowski, B. *["An introduction to state-based CRDTs"](https://www.bartoszsypytkowski.com/the-state-of-a-state-based-crdts/)*.
+  Praktisk gjennomgang av state-based CRDT-er med kodeeksempler. Brukt som referanse for
+  G-Counter sin merge-semantikk (`max` per peer).
+
+- Sen, A. (2023). *["Understanding CRDTs and LWW with Swift — A Deep Dive"](https://blog.stackademic.com/understanding-crdts-and-lww-with-swift-a-deep-dive-dc98205e3aae)*, Stackademic, 2. oktober 2023.
+  Brukt som referanse for Last-Writer-Wins-register og 
+  peer_id som deterministisk tiebreaker.
+
+- Lazaroff, J. *["An Interactive Intro to CRDTs"](https://jakelazaroff.com/words/an-interactive-intro-to-crdts/)*.
+  Pedagogisk forklaring av RGA brukt som supplement til Kleppmann.
+
+### Teknisk dokumentasjon
+
+- [uWebSockets](https://github.com/uNetworking/uWebSockets)  WebSocket-serveroppsett.
+- [Emscripten Embind](https://emscripten.org/docs/porting/connecting_cpp_and_javascript/embind.html)  C++ og TypeScript-bindings.
+- [nlohmann/json](https://github.com/nlohmann/json)  JSON-serialisering.
+- [cppreference.com](https://en.cppreference.com/)  Oppslagsverk for C++-standardbiblioteket.
+- [Vue.js Guide](https://vuejs.org/guide/)  Offisiell dokumentasjon for Vue 3, brukt under frontend-utviklingen.
+- [W3Schools](https://www.w3schools.com/)  Referanse for HTML, CSS og DOM-API-er i frontend.
+- [Docker-dokumentasjon](https://docs.docker.com/)  Referanse for Dockerfile- og Docker Compose-oppsett.
