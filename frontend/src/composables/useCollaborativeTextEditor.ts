@@ -82,6 +82,7 @@ type CounterStateMessage = {
   counter: 'cookies'
   value: number
   own_count: number
+  replica_id?: string
 }
 
 type ServerMessage =
@@ -101,6 +102,7 @@ const defaultSelection: TextSelection = { start: 0, end: 0 }
 const cursorUpdateDelayMs = 100
 const peerColors = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
 const PENDING_OPS_STORAGE_KEY = 'cookiedoc:pendingOps:v1'
+const COOKIE_REPLICA_ID_STORAGE_KEY = 'cookiedoc:cookieReplicaId:v1'
 const reconnectInitialDelayMs = 1000
 const reconnectMaxDelayMs = 15000
 
@@ -196,6 +198,14 @@ function commonSuffixLength(left: TextSegment[], right: TextSegment[], prefixLen
   return count
 }
 
+function createCookieReplicaId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `cookie-${crypto.randomUUID()}`
+  }
+
+  return `cookie-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
 export function useCollaborativeTextEditor() {
   const editorText = ref(defaultText)
   const serverUrl = ref('ws://localhost:3030/ws')
@@ -212,6 +222,7 @@ export function useCollaborativeTextEditor() {
   const cookieServerCount = ref(0)
   const cookieConfirmedOwnCount = ref(0)
   const cookieOwnCount = ref(0)
+  const cookieReplicaId = loadCookieReplicaId()
 
   // LWW-Register for the document title. Local writes happen only on commit
   // (blur/Enter from DocumentTitle.vue); remote writes resolve via LWW order.
@@ -242,6 +253,21 @@ export function useCollaborativeTextEditor() {
       return Array.isArray(parsed) ? parsed : []
     } catch {
       return []
+    }
+  }
+
+  function loadCookieReplicaId() {
+    try {
+      const existing = window.localStorage.getItem(COOKIE_REPLICA_ID_STORAGE_KEY)
+      if (existing) {
+        return existing
+      }
+
+      const created = createCookieReplicaId()
+      window.localStorage.setItem(COOKIE_REPLICA_ID_STORAGE_KEY, created)
+      return created
+    } catch {
+      return createCookieReplicaId()
     }
   }
 
@@ -350,15 +376,20 @@ export function useCollaborativeTextEditor() {
     if (pendingOps.value.length === 0) return
 
     // Collapse counter_update messages — server's G-Counter merge keeps the
-    // max per peer, so replaying every intermediate value is redundant.
+    // max per stable replica, so replaying every intermediate value is redundant.
     const collapsed: Record<string, unknown>[] = []
     let cookieIndex = -1
     for (const op of pendingOps.value) {
       if (op.type === 'counter_update') {
+        const cookieUpdate = {
+          ...op,
+          replica_id: cookieReplicaId,
+        }
+
         if (cookieIndex >= 0) {
-          collapsed[cookieIndex] = op
+          collapsed[cookieIndex] = cookieUpdate
         } else {
-          collapsed.push(op)
+          collapsed.push(cookieUpdate)
           cookieIndex = collapsed.length - 1
         }
       } else {
@@ -677,6 +708,7 @@ export function useCollaborativeTextEditor() {
     sendToServer({
       type: 'counter_update',
       counter: 'cookies',
+      replica_id: cookieReplicaId,
       count: nextCount,
     })
     if (isConnected.value) {
@@ -832,9 +864,21 @@ export function useCollaborativeTextEditor() {
       return
     }
 
+    if (message.replica_id && message.replica_id !== cookieReplicaId) {
+      return
+    }
+
     cookieServerCount.value = Math.max(0, message.value)
     cookieConfirmedOwnCount.value = Math.max(0, message.own_count)
     cookieOwnCount.value = Math.max(cookieOwnCount.value, cookieConfirmedOwnCount.value)
+  }
+
+  function requestCookieCounterState() {
+    sendToServer({
+      type: 'counter_state_request',
+      counter: 'cookies',
+      replica_id: cookieReplicaId,
+    })
   }
 
   function handleServerMessage(event: MessageEvent<string>) {
@@ -968,9 +1012,9 @@ export function useCollaborativeTextEditor() {
       statusMessage.value = 'Connected to server'
       lastSentCursorUpdate = ''
       reconnectAttempt = 0
-      // Send queued offline ops first. The server's open handler will push a
-      // sync_state right after; applySyncState's merge branch handles the
-      // overlap so nothing is lost.
+      // Ask for this browser's stored counter component before flushing queued
+      // absolute counter updates for the same stable replica ID.
+      requestCookieCounterState()
       flushPendingOps()
       scheduleCursorUpdate()
     }

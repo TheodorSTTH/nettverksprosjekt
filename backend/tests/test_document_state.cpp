@@ -109,23 +109,25 @@ TEST_CASE("Snapshot save and load preserves Unicode text", "[server]") {
     std::filesystem::remove(path);
 }
 
-TEST_CASE("Cookie counter uses GCounter max semantics per peer", "[server]") {
+TEST_CASE("Cookie counter uses GCounter max semantics per replica", "[server]") {
     const auto path = test_snapshot_path("crdt_doc_state_cookie_counter.json");
     std::filesystem::remove(path);
 
     server::DocumentState state(0, path);
 
-    REQUIRE(state.apply_cookie_count(1, 3));
-    REQUIRE_FALSE(state.apply_cookie_count(1, 2));
-    REQUIRE(state.apply_cookie_count(2, 4));
+    REQUIRE(state.apply_cookie_count("cookie-client-a", 3));
+    REQUIRE_FALSE(state.apply_cookie_count("cookie-client-a", 2));
+    REQUIRE(state.apply_cookie_count("cookie-client-b", 4));
 
-    const auto peer_one_state = state.cookie_counter_state(1);
+    const auto peer_one_state = state.cookie_counter_state("cookie-client-a");
     REQUIRE(peer_one_state.at("value") == 7);
     REQUIRE(peer_one_state.at("own_count") == 3);
+    REQUIRE(peer_one_state.at("replica_id") == "cookie-client-a");
 
-    const auto peer_two_state = state.cookie_counter_state(2);
+    const auto peer_two_state = state.cookie_counter_state("cookie-client-b");
     REQUIRE(peer_two_state.at("value") == 7);
     REQUIRE(peer_two_state.at("own_count") == 4);
+    REQUIRE(peer_two_state.at("replica_id") == "cookie-client-b");
 }
 
 TEST_CASE("Cookie counter persists in document snapshot", "[server]") {
@@ -134,17 +136,17 @@ TEST_CASE("Cookie counter persists in document snapshot", "[server]") {
 
     {
         server::DocumentState state(0, path);
-        state.apply_cookie_count(1, 8);
-        state.apply_cookie_count(2, 5);
+        state.apply_cookie_count("cookie-client-a", 8);
+        state.apply_cookie_count("cookie-client-b", 5);
         state.save();
     }
 
     server::DocumentState loaded(0, path);
     loaded.load();
 
-    REQUIRE(loaded.cookie_counter_state(1).at("value") == 13);
-    REQUIRE(loaded.cookie_counter_state(1).at("own_count") == 8);
-    REQUIRE(loaded.snapshot_json().at("cookie_counter").at("counts").at("2") == 5);
+    REQUIRE(loaded.cookie_counter_state("cookie-client-a").at("value") == 13);
+    REQUIRE(loaded.cookie_counter_state("cookie-client-a").at("own_count") == 8);
+    REQUIRE(loaded.snapshot_json().at("cookie_counter").at("counts").at("cookie-client-b") == 5);
 
     std::filesystem::remove(path);
 }

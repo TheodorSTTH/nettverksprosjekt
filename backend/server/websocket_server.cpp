@@ -23,6 +23,7 @@ namespace {
 
 struct ClientData {
     std::uint32_t peer_id = 0;
+    std::string cookie_replica_id;
 };
 
 using WebSocket = uWS::WebSocket<false, true, ClientData>;
@@ -208,7 +209,7 @@ private:
                     }
 
                     const auto applied = document_.apply_cookie_count(
-                        queued.sender_peer_id,
+                        update->replica_id,
                         update->count
                     );
 
@@ -218,7 +219,7 @@ private:
                     } else {
                         send_to_peer(
                             queued.sender_peer_id,
-                            dump_message(document_.cookie_counter_state(queued.sender_peer_id))
+                            dump_message(document_.cookie_counter_state(update->replica_id))
                         );
                     }
 
@@ -285,7 +286,7 @@ private:
                     );
                     send_to_peer(
                         queued.sender_peer_id,
-                        dump_message(document_.cookie_counter_state(queued.sender_peer_id))
+                        dump_message(document_.cookie_counter_state(cookie_replica_id_for(queued.sender_peer_id)))
                     );
 
                     break;
@@ -306,9 +307,14 @@ private:
     }
 
     void broadcast_counter_state() {
-        for (const auto& [peer_id, client] : clients_) {
+        for (const auto& [_, client] : clients_) {
+            const auto* data = client->getUserData();
+            if (data->cookie_replica_id.empty()) {
+                continue;
+            }
+
             client->send(
-                dump_message(document_.cookie_counter_state(peer_id)),
+                dump_message(document_.cookie_counter_state(data->cookie_replica_id)),
                 uWS::OpCode::TEXT
             );
         }
@@ -322,6 +328,17 @@ private:
 
     bool is_peer_connected(std::uint32_t peer_id) const {
         return clients_.find(peer_id) != clients_.end();
+    }
+
+    std::string cookie_replica_id_for(std::uint32_t peer_id) const {
+        if (auto client = clients_.find(peer_id); client != clients_.end()) {
+            const auto* data = client->second->getUserData();
+            if (!data->cookie_replica_id.empty()) {
+                return data->cookie_replica_id;
+            }
+        }
+
+        return std::to_string(peer_id);
     }
 
     void broadcast_except(std::uint32_t sender_peer_id, const std::string& message) {
@@ -382,11 +399,6 @@ void WebSocketServer::run() {
                            dump_message(document_.snapshot_json()),
                            uWS::OpCode::TEXT
                        );
-
-                       ws->send(
-                           dump_message(document_.cookie_counter_state(data->peer_id)),
-                           uWS::OpCode::TEXT
-                       );
                },
 
                .message =
@@ -419,11 +431,25 @@ void WebSocketServer::run() {
                                    dump_message(document_.snapshot_json()),
                                    uWS::OpCode::TEXT
                                );
+                               return;
+
+                           case protocol::MessageType::CounterStateRequest: {
+                               const auto request = protocol::parse_counter_state_request(message);
+                               if (!request) {
+                                   ws->send(
+                                       dump_message(protocol::serialize_error("invalid counter state request")),
+                                       uWS::OpCode::TEXT
+                                   );
+                                   return;
+                               }
+
+                               ws->getUserData()->cookie_replica_id = request->replica_id;
                                ws->send(
-                                   dump_message(document_.cookie_counter_state(ws->getUserData()->peer_id)),
+                                   dump_message(document_.cookie_counter_state(request->replica_id)),
                                    uWS::OpCode::TEXT
                                );
                                return;
+                           }
 
                            case protocol::MessageType::SaveRequest:
                                delayed_operations.enqueue(

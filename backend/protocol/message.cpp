@@ -1,5 +1,6 @@
 #include "protocol/message.hpp"
 
+#include <cctype>
 #include <stdexcept>
 
 namespace protocol {
@@ -47,6 +48,21 @@ std::optional<std::uint64_t> parse_u64_field(const nlohmann::json& value, const 
     return static_cast<std::uint64_t>(signed_number);
 }
 
+bool is_valid_replica_id(const std::string& replica_id) {
+    if (replica_id.empty() || replica_id.size() > 128) {
+        return false;
+    }
+
+    for (const auto character : replica_id) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (!std::isalnum(byte) && character != '-' && character != '_') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 std::string type_string(MessageType type) {
     switch (type) {
         case MessageType::AssignPeerId:
@@ -73,6 +89,8 @@ std::string type_string(MessageType type) {
             return "peer_left";
         case MessageType::CounterUpdate:
             return "counter_update";
+        case MessageType::CounterStateRequest:
+            return "counter_state_request";
         case MessageType::CounterState:
             return "counter_state";
         case MessageType::SetTitle:
@@ -106,6 +124,7 @@ MessageType message_type(const nlohmann::json& message) {
     if (type == "remote_cursor") return MessageType::RemoteCursor;
     if (type == "peer_left") return MessageType::PeerLeft;
     if (type == "counter_update") return MessageType::CounterUpdate;
+    if (type == "counter_state_request") return MessageType::CounterStateRequest;
     if (type == "counter_state") return MessageType::CounterState;
     if (type == "set_title") return MessageType::SetTitle;
     if (type == "error") return MessageType::Error;
@@ -212,14 +231,21 @@ nlohmann::json serialize_peer_left(std::uint32_t peer_id) {
 nlohmann::json serialize_counter_state(
     const std::string& counter,
     std::uint64_t value,
-    std::uint64_t own_count
+    std::uint64_t own_count,
+    const std::string& replica_id
 ) {
-    return nlohmann::json{
+    auto message = nlohmann::json{
         {"type", "counter_state"},
         {"counter", counter},
         {"value", value},
         {"own_count", own_count},
     };
+
+    if (!replica_id.empty()) {
+        message["replica_id"] = replica_id;
+    }
+
+    return message;
 }
 
 nlohmann::json serialize_error(const std::string& message) {
@@ -353,7 +379,8 @@ std::optional<crdt::LWWOperation<std::string>> parse_set_title(const nlohmann::j
 }
 
 std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message) {
-    if (!message.is_object() || !message.contains("counter") || !message.at("counter").is_string()) {
+    if (!message.is_object() || !message.contains("counter") || !message.at("counter").is_string() ||
+        !message.contains("replica_id") || !message.at("replica_id").is_string()) {
         return std::nullopt;
     }
 
@@ -362,12 +389,36 @@ std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message)
         return std::nullopt;
     }
 
+    const auto replica_id = message.at("replica_id").get<std::string>();
+    if (!is_valid_replica_id(replica_id)) {
+        return std::nullopt;
+    }
+
     const auto count = parse_u64_field(message, "count");
     if (!count) {
         return std::nullopt;
     }
 
-    return CounterUpdate{counter, *count};
+    return CounterUpdate{counter, replica_id, *count};
+}
+
+std::optional<CounterStateRequest> parse_counter_state_request(const nlohmann::json& message) {
+    if (!message.is_object() || !message.contains("counter") || !message.at("counter").is_string() ||
+        !message.contains("replica_id") || !message.at("replica_id").is_string()) {
+        return std::nullopt;
+    }
+
+    const auto counter = message.at("counter").get<std::string>();
+    if (counter != "cookies") {
+        return std::nullopt;
+    }
+
+    const auto replica_id = message.at("replica_id").get<std::string>();
+    if (!is_valid_replica_id(replica_id)) {
+        return std::nullopt;
+    }
+
+    return CounterStateRequest{counter, replica_id};
 }
 
 ParseResult validate_client_message(const nlohmann::json& message) {
@@ -380,6 +431,8 @@ ParseResult validate_client_message(const nlohmann::json& message) {
             return parse_cursor_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid cursor update"};
         case MessageType::CounterUpdate:
             return parse_counter_update(message) ? ParseResult{true, {}} : ParseResult{false, "invalid counter update"};
+        case MessageType::CounterStateRequest:
+            return parse_counter_state_request(message) ? ParseResult{true, {}} : ParseResult{false, "invalid counter state request"};
         case MessageType::SetTitle:
             return parse_set_title(message) ? ParseResult{true, {}} : ParseResult{false, "invalid set_title message"};
         case MessageType::SyncRequest:

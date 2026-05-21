@@ -14,7 +14,7 @@ namespace protocol {
  * @brief Enumeration of every message type exchanged over the WebSocket.
  *
  * Client-to-server types include Insert, Delete, SyncRequest, SaveRequest,
- * CursorUpdate, CounterUpdate and SetTitle. Server-to-client types include
+ * CursorUpdate, CounterUpdate, CounterStateRequest and SetTitle. Server-to-client types include
  * AssignPeerId, SyncState, RemoteInsert, RemoteDelete, RemoteCursor,
  * PeerLeft, CounterState and Error. Unknown is returned by message_type
  * when the incoming JSON has no recognised type field.
@@ -32,6 +32,7 @@ enum class MessageType {
     RemoteCursor,
     PeerLeft,
     CounterUpdate,
+    CounterStateRequest,
     CounterState,
     SetTitle,
     Error,
@@ -58,7 +59,16 @@ struct CursorUpdate {
  */
 struct CounterUpdate {
     std::string counter;        ///< Counter name. Only "cookies" is recognised.
+    std::string replica_id;     ///< Stable G-Counter replica ID for this browser/client.
     std::uint64_t count = 0;    ///< Sender's current absolute count for that counter.
+};
+
+/**
+ * @brief Request current counter state for a stable replica ID.
+ */
+struct CounterStateRequest {
+    std::string counter;        ///< Counter name. Only "cookies" is recognised.
+    std::string replica_id;     ///< Stable G-Counter replica ID for this browser/client.
 };
 
 /**
@@ -140,7 +150,8 @@ nlohmann::json serialize_peer_left(std::uint32_t peer_id);
 nlohmann::json serialize_counter_state(
     const std::string& counter,
     std::uint64_t value,
-    std::uint64_t own_count
+    std::uint64_t own_count,
+    const std::string& replica_id = {}
 );
 
 /// @brief Build an error message that the server can send back to a client.
@@ -163,6 +174,9 @@ std::optional<CursorUpdate> parse_cursor_update(const nlohmann::json& message);
 
 /// @brief Parse a counter update. Returns std::nullopt if the counter name is unknown or fields are missing.
 std::optional<CounterUpdate> parse_counter_update(const nlohmann::json& message);
+
+/// @brief Parse a counter state request. Returns std::nullopt if the counter name or replica_id is invalid.
+std::optional<CounterStateRequest> parse_counter_state_request(const nlohmann::json& message);
 
 /// @brief Parse a set_title operation. Returns std::nullopt if malformed.
 std::optional<crdt::LWWOperation<std::string>> parse_set_title(const nlohmann::json& message);

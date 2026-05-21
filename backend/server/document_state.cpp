@@ -73,9 +73,9 @@ DeleteResult DocumentState::apply_delete(const crdt::DeleteOp& operation) {
     return DeleteResult{ApplyStatus::Applied, operation};
 }
 
-bool DocumentState::apply_cookie_count(std::uint32_t peer_id, std::uint64_t count) {
+bool DocumentState::apply_cookie_count(const std::string& replica_id, std::uint64_t count) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return cookie_counter_.merge_count(std::to_string(peer_id), count);
+    return cookie_counter_.merge_count(replica_id, count);
 }
 
 void DocumentState::apply_set_title(const crdt::LWWOperation<std::string>& operation) {
@@ -95,12 +95,13 @@ nlohmann::json DocumentState::title_state() const {
     return protocol::serialize_title_state(title_);
 }
 
-nlohmann::json DocumentState::cookie_counter_state(std::uint32_t peer_id) const {
+nlohmann::json DocumentState::cookie_counter_state(const std::string& replica_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return protocol::serialize_counter_state(
         "cookies",
         cookie_counter_.value(),
-        cookie_counter_.count_for(std::to_string(peer_id))
+        cookie_counter_.count_for(replica_id),
+        replica_id
     );
 }
 
